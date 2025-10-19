@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +49,101 @@ from boltz.data.types import (
     Target,
     TemplateInfo,
 )
+
+####################################################################################################
+# CONSTANTS AND HELPERS
+####################################################################################################
+
+
+WATER_MASS = 18.01528
+
+PROTEIN_RESIDUE_MASS = {
+    "A": 89.09,
+    "R": 174.20,
+    "N": 132.12,
+    "D": 133.10,
+    "C": 121.15,
+    "E": 147.13,
+    "Q": 146.15,
+    "G": 75.07,
+    "H": 155.16,
+    "I": 131.17,
+    "L": 131.17,
+    "K": 146.19,
+    "M": 149.21,
+    "F": 165.19,
+    "P": 115.13,
+    "S": 105.09,
+    "T": 119.12,
+    "W": 204.23,
+    "Y": 181.19,
+    "V": 117.15,
+    "X": 125.0,
+    "B": 132.0,
+    "Z": 146.0,
+    "J": 131.0,
+    "O": 255.0,
+    "U": 168.0,
+    "-": 0.0,
+}
+
+DNA_RESIDUE_MASS = {
+    "A": 331.22,
+    "G": 347.22,
+    "C": 307.20,
+    "T": 322.21,
+    "N": 327.96,
+}
+
+RNA_RESIDUE_MASS = {
+    "A": 347.22,
+    "G": 363.22,
+    "C": 323.20,
+    "U": 324.18,
+    "N": 339.45,
+}
+
+
+def estimate_polymer_mw(sequence: str, entity_type: str) -> float:
+    """Estimate the molecular weight for a polymeric chain.
+
+    Parameters
+    ----------
+    sequence : str
+        The raw polymer sequence (single-letter codes).
+    entity_type : str
+        The entity type ("protein", "dna", or "rna").
+
+    Returns
+    -------
+    float
+        The estimated molecular weight in Daltons.
+
+    """
+
+    if not sequence:
+        return 0.0
+
+    sequence = sequence.upper()
+    if entity_type == "protein":
+        masses = PROTEIN_RESIDUE_MASS
+    elif entity_type == "dna":
+        masses = DNA_RESIDUE_MASS
+    elif entity_type == "rna":
+        masses = RNA_RESIDUE_MASS
+    else:
+        return 0.0
+
+    total = 0.0
+    fallback = masses.get("N") if entity_type != "protein" else masses.get("X", 0.0)
+    for residue in sequence:
+        total += masses.get(residue, fallback)
+
+    if len(sequence) > 1:
+        total -= WATER_MASS * (len(sequence) - 1)
+
+    return max(total, 0.0)
+
 
 ####################################################################################################
 # DATACLASSES
@@ -1043,7 +1138,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
             chain_name_to_entity_type[chain_name] = entity_type
 
     # Check if any affinity ligand is present
-    affinity_ligands = set()
+    affinity_chains = set()
     properties = schema.get("properties", [])
     if properties and not boltz_2:
         msg = "Affinity prediction is only supported for Boltz2!"
@@ -1062,18 +1157,20 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                 msg = f"Could not find binder with name {binder} in the input!"
                 raise ValueError(msg)
 
-            if chain_name_to_entity_type[binder] != "ligand":
+            chain_type = chain_name_to_entity_type[binder]
+            if chain_type not in {"ligand", "protein", "dna", "rna"}:
                 msg = (
-                    f"Chain {binder} is not a ligand! "
-                    "Affinity is currently only supported for ligands."
+                    f"Chain {binder} has unsupported type {chain_type}! "
+                    "Affinity prediction is only supported for ligands, "
+                    "proteins, DNA, or RNA chains."
                 )
                 raise ValueError(msg)
 
-            affinity_ligands.add(binder)
+            affinity_chains.add(binder)
 
     # Check only one affinity ligand is present
-    if len(affinity_ligands) > 1:
-        msg = "Only one affinity ligand is currently supported!"
+    if len(affinity_chains) > 1:
+        msg = "Only one affinity binder is currently supported!"
         raise ValueError(msg)
 
     # Go through entities and parse them
@@ -1098,9 +1195,9 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
 
         # Check if any affinity ligand is present
         if len(ids) == 1:
-            affinity = ids[0] in affinity_ligands
-        elif (len(ids) > 1) and any(x in affinity_ligands for x in ids):
-            msg = "Cannot compute affinity for a ligand that has multiple copies!"
+            affinity = ids[0] in affinity_chains
+        elif (len(ids) > 1) and any(x in affinity_chains for x in ids):
+            msg = "Cannot compute affinity for a chain that has multiple copies!"
             raise ValueError(msg)
         else:
             affinity = False
@@ -1179,6 +1276,17 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
                 components=ccd,
                 cyclic=cyclic,
                 mol_dir=mol_dir,
+            )
+
+            affinity_mw = (
+                estimate_polymer_mw(raw_seq, entity_type)
+                if affinity
+                else None
+            )
+            parsed_chain = replace(
+                parsed_chain,
+                affinity=affinity,
+                affinity_mw=affinity_mw,
             )
 
         # Parse a non-polymer
