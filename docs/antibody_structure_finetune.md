@@ -87,7 +87,8 @@ profile that is blended with the traditional MSA statistics.
    msa_dir = pathlib.Path('~/sabdab_finetune/msas').expanduser()
    msa_dir.mkdir(parents=True, exist_ok=True)
 
-   manifest = json.load(open('~/sabdab_finetune/targets/manifest.json'))
+   manifest_path = pathlib.Path('~/sabdab_finetune/targets/manifest.json').expanduser()
+   manifest = json.load(manifest_path.open())
    seen = set()
    for record in manifest:
        for chain in record['chains']:
