@@ -69,7 +69,7 @@ data:
     mix: 0.35
 
 model:
-  _target_: boltz.model.model.Boltz1
+  _target_: boltz.model.models.boltz2.Boltz2
   atom_s: 128
   atom_z: 16
   token_s: 384
@@ -119,6 +119,18 @@ model:
     offload_to_cpu: false
 
   confidence_prediction: false
+  confidence_model_args:
+    num_dist_bins: 64
+    max_dist: 22
+    add_s_to_z_prod: true
+    add_s_input_to_s: true
+    use_s_diffusion: true
+    add_z_input_to_z: true
+
+    confidence_args:
+      num_plddt_bins: 50
+      num_pde_bins: 64
+      num_pae_bins: 64
 
   training_args:
     recycling_steps: 3
@@ -144,3 +156,24 @@ model:
     sampling_steps: 8
     diffusion_multiplicity: 4
     diffusion_samples: 1
+
+  diffusion_process_args:
+    sigma_min: 0.0004
+    sigma_max: 160.0
+    sigma_data: 16.0
+    rho: 7
+    P_mean: -1.2
+    P_std: 1.5
+    gamma_0: 0.8
+    gamma_min: 1.0
+    noise_scale: 1.0
+    step_scale: 1.0
+    coordinate_augmentation: true
+    alignment_reverse_diff: true
+    synchronize_sigmas: true
+    use_inference_model_cache: true
+
+  diffusion_loss_args:
+    add_smooth_lddt_loss: true
+    nucleotide_loss_weight: 5.0
+    ligand_loss_weight: 10.0
