@@ -57,6 +57,23 @@ from boltz.data.types import (
 
 WATER_MASS = 18.01528
 
+
+def _get_atom_name(atom: Chem.Atom) -> str:
+    """Return the canonical atom name, inferring it when necessary."""
+
+    if atom.HasProp("name"):
+        return atom.GetProp("name")
+
+    residue_info = atom.GetPDBResidueInfo()
+    if residue_info is not None:
+        inferred = residue_info.GetName().strip()
+        if inferred:
+            atom.SetProp("name", inferred)
+            return inferred
+
+    msg = "Atom is missing the 'name' property and could not infer one"
+    raise KeyError(msg)
+
 PROTEIN_RESIDUE_MASS = {
     "A": 89.09,
     "R": 174.20,
@@ -773,7 +790,7 @@ def parse_ccd_residue(
             str(ref_atom.GetChiralTag()), unk_chirality
         )
         atom = ParsedAtom(
-            name=ref_atom.GetProp("name"),
+            name=_get_atom_name(ref_atom),
             element=ref_atom.GetAtomicNum(),
             charge=ref_atom.GetFormalCharge(),
             coords=pos,
@@ -810,7 +827,7 @@ def parse_ccd_residue(
             continue
 
         # Get atom name, charge, element and reference coordinates
-        atom_name = atom.GetProp("name")
+        atom_name = _get_atom_name(atom)
 
         # Drop leaving atoms for non-canonical amino acids.
         if drop_leaving_atoms and int(atom.GetProp("leaving_atom")):
@@ -955,7 +972,7 @@ def parse_polymer(
         ref_conformer = get_conformer(ref_mol)
 
         # Only use reference atoms set in constants
-        ref_name_to_atom = {a.GetProp("name"): a for a in ref_mol.GetAtoms()}
+        ref_name_to_atom = {_get_atom_name(a): a for a in ref_mol.GetAtoms()}
         ref_atoms = [ref_name_to_atom[a] for a in const.ref_atoms[res_corrected]]
 
         # Iterate, always in the same order
@@ -963,7 +980,7 @@ def parse_polymer(
 
         for ref_atom in ref_atoms:
             # Get atom name
-            atom_name = ref_atom.GetProp("name")
+            atom_name = _get_atom_name(ref_atom)
             idx = ref_atom.GetIdx()
 
             # Get conformer coordinates
