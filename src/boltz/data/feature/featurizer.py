@@ -1,6 +1,6 @@
 import math
 import random
-from typing import Optional
+from typing import Optional, Union
 from collections import deque
 import numba
 import numpy as np
@@ -897,6 +897,8 @@ def process_msa_features(
     max_seqs: int,
     max_tokens: Optional[int] = None,
     pad_to_max_seqs: bool = False,
+    esm_profile: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    profile_mix: Optional[float] = None,
 ) -> dict[str, Tensor]:
     """Get the MSA features.
 
@@ -929,6 +931,16 @@ def process_msa_features(
     msa = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)
     msa_mask = torch.ones_like(msa[:, :, 0])
     profile = msa.float().mean(dim=0)
+    if esm_profile is not None:
+        esm_tensor = torch.as_tensor(esm_profile, dtype=profile.dtype)
+        if esm_tensor.shape != profile.shape:
+            msg = (
+                "ESM profile shape does not match MSA profile: "
+                f"expected {tuple(profile.shape)}, got {tuple(esm_tensor.shape)}"
+            )
+            raise ValueError(msg)
+        mix = 0.5 if profile_mix is None else float(profile_mix)
+        profile = mix * profile + (1 - mix) * esm_tensor
     has_deletion = deletion > 0
     deletion = np.pi / 2 * np.arctan(deletion / 3)
     deletion_mean = deletion.mean(axis=0)
@@ -1122,6 +1134,9 @@ def process_chain_feature_constraints(
 class BoltzFeaturizer:
     """Boltz featurizer."""
 
+    def __init__(self, esm_profile_mix: Optional[float] = None) -> None:
+        self.esm_profile_mix = esm_profile_mix
+
     def process(
         self,
         data: Tokenized,
@@ -1201,6 +1216,8 @@ class BoltzFeaturizer:
             max_seqs,
             max_tokens,
             pad_to_max_seqs,
+            esm_profile=getattr(data, "esm_profile", None),
+            profile_mix=self.esm_profile_mix,
         )
 
         # Compute symmetry features
