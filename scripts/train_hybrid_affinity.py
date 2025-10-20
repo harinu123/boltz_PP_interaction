@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import logging
@@ -21,13 +22,20 @@ import yaml
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+import requests
+
 from boltz.main import predict as boltz_predict
 
 LOGGER = logging.getLogger("boltz.hybrid_affinity")
 
 # Shared regex utilities
 _CHAIN_DELIMITER = re.compile(r"[\s|,:;/]+")
-_VALID_PROTEIN_TOKENS = set("ACDEFGHIKLMNPQRSTVWYBXZOU-" )
+_VALID_PROTEIN_TOKENS = set("ACDEFGHIKLMNPQRSTVWYBXZOU-")
+
+_SABDAB_DATA_ID = 4167357
+_SABDAB_DATA_URL = f"https://dataverse.harvard.edu/api/access/datafile/{_SABDAB_DATA_ID}"
+_SABDAB_FILENAME = "protein_sabdab.csv"
+_DEFAULT_DATA_DIR = Path(os.environ.get("HYBRID_DATA_DIR", "./data"))
 
 
 @dataclass
@@ -40,6 +48,86 @@ class InteractionExample:
     antigen: str
     log_affinity: float
     split: str
+
+
+def download_sabdab_dataset(data_dir: Path) -> Path:
+    """Download the Protein_SAbDab CSV if it is not already cached."""
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    destination = data_dir / _SABDAB_FILENAME
+    if destination.exists():
+        return destination
+
+    tmp_path = destination.with_suffix(".tmp")
+    LOGGER.info("Downloading Protein_SAbDab dataset to %s", destination)
+
+    with requests.get(_SABDAB_DATA_URL, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with tmp_path.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    handle.write(chunk)
+
+    tmp_path.replace(destination)
+    return destination
+
+
+def _load_sabdab_frame(csv_path: Path) -> pd.DataFrame:
+    """Load the raw Protein_SAbDab CSV into a cleaned DataFrame."""
+
+    frame = pd.read_csv(csv_path)
+    unnamed_cols = [col for col in frame.columns if str(col).startswith("Unnamed")]  # pandas index column
+    if unnamed_cols:
+        frame = frame.drop(columns=unnamed_cols)
+    return frame
+
+
+def _split_indices(size: int, fractions: tuple[float, float, float], seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Generate random train/validation/test splits."""
+
+    if size == 0:
+        return np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int)
+
+    rng = np.random.default_rng(seed)
+    indices = np.arange(size)
+    rng.shuffle(indices)
+
+    train_end = int(fractions[0] * size)
+    valid_end = train_end + int(fractions[1] * size)
+    train_idx = indices[:train_end]
+    valid_idx = indices[train_end:valid_end]
+    test_idx = indices[valid_end:]
+    return train_idx, valid_idx, test_idx
+
+
+def _partition_frame(frame: pd.DataFrame, seed: int = 42) -> dict[str, pd.DataFrame]:
+    """Partition the Protein_SAbDab dataframe into train/valid/test splits."""
+
+    train_idx, valid_idx, test_idx = _split_indices(len(frame), (0.7, 0.1, 0.2), seed)
+    splits: dict[str, pd.DataFrame] = {}
+    splits["train"] = frame.iloc[train_idx].reset_index(drop=True)
+    splits["valid"] = frame.iloc[valid_idx].reset_index(drop=True)
+    splits["test"] = frame.iloc[test_idx].reset_index(drop=True)
+    return splits
+
+
+def _parse_antibody_entry(entry: str) -> tuple[str, str]:
+    """Parse a raw antibody column entry into heavy and light chain sequences."""
+
+    if not entry or entry.lower() in {"nan", "none"}:
+        return "", ""
+
+    try:
+        parsed = ast.literal_eval(entry)
+    except (SyntaxError, ValueError):
+        return split_antibody_sequence(entry)
+
+    if isinstance(parsed, (list, tuple)):
+        heavy = sanitize_sequence(str(parsed[0])) if parsed else ""
+        light = sanitize_sequence(str(parsed[1])) if len(parsed) > 1 else ""
+        return heavy, light
+
+    return split_antibody_sequence(entry)
 
 
 class ESMEmbedder:
@@ -351,40 +439,21 @@ def compute_log_affinity(value: float, already_log: bool) -> float:
     return float(math.log10(clipped))
 
 
-def load_dataset() -> dict[str, list[InteractionExample]]:
-    try:
-        from tdc.multi_pred import AntibodyAff
-    except ImportError as exc:  # pragma: no cover - handled at runtime
-        msg = (
-            "PyTDC is required to download the Protein_SAbDab dataset. "
-            "Install it with `pip install PyTDC`."
-        )
-        raise ImportError(msg) from exc
-
-    dataset = AntibodyAff(name="Protein_SAbDab")
-    splits = dataset.get_split()
+def load_dataset(data_dir: Path = _DEFAULT_DATA_DIR) -> dict[str, list[InteractionExample]]:
+    csv_path = download_sabdab_dataset(data_dir)
+    frame = _load_sabdab_frame(csv_path)
+    splits = _partition_frame(frame)
 
     processed: dict[str, list[InteractionExample]] = {}
-    for raw_split_name, frame in splits.items():
-        split_name_lower = raw_split_name.lower()
-        if split_name_lower in {"valid", "validation", "val"}:
-            split_name = "valid"
-        elif split_name_lower in {"test", "testing"}:
-            split_name = "test"
-        elif split_name_lower in {"train", "training"}:
-            split_name = "train"
-        else:
-            split_name = raw_split_name
-
-        antibody_col = resolve_column(frame, ["Antibody", "antibody", "antibody_seq"])
-        antigen_col = resolve_column(frame, ["Antigen", "antigen", "antigen_seq"])
+    for split_name, split_frame in splits.items():
+        antibody_col = resolve_column(split_frame, ["X1", "Antibody", "antibody", "antibody_seq"])
+        antigen_col = resolve_column(split_frame, ["X2", "Antigen", "antigen", "antigen_seq"])
         target_col = resolve_column(
-            frame,
+            split_frame,
             [
+                "Y",
                 "Affinity",
                 "affinity",
-                "Y",
-                "y",
                 "label",
                 "Kd",
                 "kd",
@@ -394,33 +463,42 @@ def load_dataset() -> dict[str, list[InteractionExample]]:
                 "paffinity",
             ],
         )
-        id_col = None
-        for candidate in ("ID", "id", "complex_id", "pdb_id", "Index"):
-            if candidate in frame.columns:
-                id_col = candidate
+
+        id_column = None
+        for candidate in ("ID", "id", "ID1", "id1", "complex_id", "pdb_id", "Index"):
+            if candidate in split_frame.columns:
+                id_column = candidate
                 break
 
-        target_col_lower = target_col.lower()
-        already_log = "log" in target_col_lower or target_col_lower.startswith("p")
-
         examples: list[InteractionExample] = []
-        for row_idx, row in frame.reset_index(drop=True).iterrows():
-            identifier = str(row[id_col]) if id_col else f"{split_name}_{row_idx}"
-            antibody_raw = str(row[antibody_col])
-            antigen_raw = str(row[antigen_col])
-            heavy, light = split_antibody_sequence(antibody_raw)
-            antigen = sanitize_sequence(antigen_raw)
-            log_affinity = compute_log_affinity(float(row[target_col]), already_log)
-            example = InteractionExample(
-                identifier=identifier,
-                antibody_heavy=heavy,
-                antibody_light=light,
-                antigen=antigen,
-                log_affinity=log_affinity,
-                split=split_name,
+        for row_idx, row in split_frame.iterrows():
+            if id_column:
+                identifier = str(row[id_column])
+            else:
+                antibody_id = str(row.get("ID1", "")).strip()
+                antigen_id = str(row.get("ID2", "")).strip()
+                if antibody_id or antigen_id:
+                    identifier = f"{antibody_id}_{antigen_id}".strip("_")
+                else:
+                    identifier = f"{split_name}_{row_idx}"
+
+            heavy, light = _parse_antibody_entry(str(row[antibody_col]))
+            antigen = sanitize_sequence(str(row[antigen_col]))
+            log_affinity = compute_log_affinity(float(row[target_col]), already_log=False)
+
+            examples.append(
+                InteractionExample(
+                    identifier=identifier,
+                    antibody_heavy=heavy,
+                    antibody_light=light,
+                    antigen=antigen,
+                    log_affinity=log_affinity,
+                    split=split_name,
+                )
             )
-            examples.append(example)
+
         processed[split_name] = examples
+
     return processed
 
 
@@ -641,6 +719,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=Path("./hybrid_affinity_output"))
     parser.add_argument("--cache-dir", type=Path, default=Path(os.environ.get("BOLTZ_CACHE", "~/.boltz")))
+    parser.add_argument("--dataset-dir", type=Path, default=_DEFAULT_DATA_DIR)
     parser.add_argument("--embedding-cache", type=Path, default=Path("./embedding_cache"))
     parser.add_argument("--esm-model", type=str, default="facebook/esm2_t33_650M_UR50D")
     parser.add_argument("--accelerator", type=str, default="gpu", choices=["gpu", "cpu"]) 
@@ -677,7 +756,9 @@ def main() -> None:
         LOGGER.warning("CUDA requested but unavailable; falling back to CPU execution.")
 
     LOGGER.info("Loading Protein_SAbDab dataset")
-    examples_by_split = load_dataset()
+    dataset_dir = args.dataset_dir.expanduser()
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    examples_by_split = load_dataset(dataset_dir)
     all_examples = [example for split in examples_by_split.values() for example in split]
 
     LOGGER.info("Preparing ESM2 embeddings for %d unique sequences", len(all_examples))

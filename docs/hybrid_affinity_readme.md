@@ -10,11 +10,11 @@ This walkthrough demonstrates how to reproduce the hybrid affinity fine-tuning w
    pip install -e .[cuda]
    ```
    If you are running on CPU-only hardware, drop the `[cuda]` extra, noting that Boltz inference will run significantly slower.
-3. Install the training-specific dependencies:
+3. Install the training-specific dependency for the language model encoder:
    ```bash
-   pip install transformers pytorch-lightning==2.2.5 "pytdc>=0.4.1"
+   pip install transformers pytorch-lightning==2.2.5
    ```
-   The `transformers` package provides the ESM2 encoder, while PyTDC exposes the curated SAbDab splits used by the script.
+   The `transformers` package provides the ESM2 encoder. PyTorch Lightning is pinned to the version the script was validated against.
 
 ## 2. Download Model Weights
 
@@ -27,6 +27,8 @@ huggingface-cli login
 ```
 
 Once downloaded, both the Boltz and ESM weights are cached under `~/.cache` and reused automatically.
+
+The first invocation will also download the Protein_SAbDab CSV from the Harvard Dataverse into `--dataset-dir` (default `./data`).
 
 ## 3. Prepare Optional GPU Resources
 
@@ -46,7 +48,7 @@ python scripts/train_hybrid_affinity.py \
 ```
 
 Key behaviors:
-- The script fetches the Protein_SAbDab splits through PyTDC and logs the train/validation/test sizes.
+- The script downloads the Protein_SAbDab CSV directly from the Harvard Dataverse (ID 4167357), caches it under `--dataset-dir`, and logs the train/validation/test sizes.
 - It caches mean-pooled ESM embeddings for every antibody heavy/light chain and antigen sequence (`--embedding-cache`).
 - It generates temporary YAML inputs for Boltz, runs affinity inference, and collects binder features (Boltz caches live under `--cache-dir`, defaulting to `~/.boltz`).
 - It assembles hybrid feature matrices that concatenate Boltz outputs and language embeddings, normalizes them using the training split, and trains a two-layer MLP regressor (`--hidden-dim`, `--dropout`, `--learning-rate`, `--weight-decay`, `--epochs`).
