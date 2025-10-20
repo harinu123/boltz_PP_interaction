@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ from boltz.data.pad import pad_to_max
 from boltz.data.sample.sampler import Sample, Sampler
 from boltz.data.tokenize.tokenizer import Tokenizer
 from boltz.data.types import MSA, Connection, Input, Manifest, Record, Structure
+from boltz.embeddings.esm_profile import ESMProfileGenerator
 
 
 @dataclass
@@ -30,6 +32,16 @@ class DatasetConfig:
     filters: Optional[list] = None
     split: Optional[str] = None
     manifest_path: Optional[str] = None
+
+
+@dataclass
+class ESMProfileConfig:
+    """Configuration for optional ESM-backed residue profiles."""
+
+    model_name: str = "facebook/esm2_t33_650M_UR50D"
+    cache_dir: Optional[str] = None
+    device: Optional[str] = None
+    mix: float = 0.5
 
 
 @dataclass
@@ -66,6 +78,7 @@ class DataConfig:
     binder_pocket_sampling_geometric_p: float = 0.0
     val_batch_size: int = 1
     compute_constraint_features: bool = False
+    esm_profile: Optional[ESMProfileConfig] = None
 
 
 @dataclass
@@ -278,6 +291,17 @@ class TrainingDataset(torch.utils.data.Dataset):
             print(f"Tokenizer failed on {sample.record.id} with error {e}. Skipping.")
             return self.__getitem__(idx)
 
+        embedder = getattr(dataset, "esm_profile_generator", None)
+        profile_map = None
+        if embedder is not None:
+            try:
+                profile_map = embedder.build_profile_map(tokenized)
+            except Exception as e:
+                print(
+                    f"ESM profile generation failed on {sample.record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(idx)
+
         # Compute crop
         try:
             if self.max_tokens is not None:
@@ -297,6 +321,16 @@ class TrainingDataset(torch.utils.data.Dataset):
         if len(tokenized.tokens) == 0:
             msg = "No tokens in cropped structure."
             raise ValueError(msg)
+
+        if profile_map is not None:
+            try:
+                profile_array = embedder.profile_for_tokens(tokenized, profile_map)
+                tokenized = replace(tokenized, esm_profile=profile_array)
+            except Exception as e:
+                print(
+                    f"Failed to align ESM profile for {sample.record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(idx)
 
         # Compute features
         try:
@@ -424,6 +458,17 @@ class ValidationDataset(torch.utils.data.Dataset):
             print(f"Tokenizer failed on {record.id} with error {e}. Skipping.")
             return self.__getitem__(0)
 
+        embedder = getattr(dataset, "esm_profile_generator", None)
+        profile_map = None
+        if embedder is not None:
+            try:
+                profile_map = embedder.build_profile_map(tokenized)
+            except Exception as e:
+                print(
+                    f"ESM profile generation failed on {record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(0)
+
         # Compute crop
         try:
             if self.crop_validation and (self.max_tokens is not None):
@@ -441,6 +486,16 @@ class ValidationDataset(torch.utils.data.Dataset):
         if len(tokenized.tokens) == 0:
             msg = "No tokens in cropped structure."
             raise ValueError(msg)
+
+        if profile_map is not None:
+            try:
+                profile_array = embedder.profile_for_tokens(tokenized, profile_map)
+                tokenized = replace(tokenized, esm_profile=profile_array)
+            except Exception as e:
+                print(
+                    f"Failed to align ESM profile for {record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(0)
 
         # Compute features
         try:
@@ -594,6 +649,28 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
         for dataset in val:
             dataset: Dataset
             print(f"Validation dataset size: {len(dataset.manifest.records)}")
+
+        self._esm_generator: Optional[ESMProfileGenerator] = None
+        if cfg.esm_profile is not None:
+            mix = cfg.esm_profile.mix
+            cache_dir = (
+                Path(cfg.esm_profile.cache_dir).expanduser()
+                if cfg.esm_profile.cache_dir is not None
+                else Path.cwd() / "esm_cache"
+            )
+            device_cfg = cfg.esm_profile.device
+            if device_cfg is None or device_cfg == "auto":
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            else:
+                device = device_cfg
+            self._esm_generator = ESMProfileGenerator(
+                model_name=cfg.esm_profile.model_name,
+                cache_dir=cache_dir,
+                device=device,
+            )
+            cfg.featurizer.esm_profile_mix = mix
+            for dataset in (*train, *val):
+                dataset.esm_profile_generator = self._esm_generator
 
         # Create wrapper datasets
         self._train_set = TrainingDataset(
