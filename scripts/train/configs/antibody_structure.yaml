@@ -169,7 +169,6 @@ model:
     coordinate_augmentation: true
     alignment_reverse_diff: true
     synchronize_sigmas: true
-    use_inference_model_cache: true
 
   diffusion_loss_args:
     add_smooth_lddt_loss: true
