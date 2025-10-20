@@ -79,8 +79,6 @@ model:
   atoms_per_window_queries: 32
   atoms_per_window_keys: 128
   compile_pairformer: false
-  nucleotide_rmsd_weight: 5.0
-  ligand_rmsd_weight: 10.0
   ema: true
   ema_decay: 0.999
 
