@@ -223,7 +223,8 @@ class BoltzAffinityPredictor:
             return
 
         LOGGER.info("Running Boltz2 affinity predictions for %s complexes", len(missing))
-        boltz_predict(
+        predict_fn = getattr(boltz_predict, "callback", boltz_predict)
+        predict_fn(
             data=str(self.input_dir),
             out_dir=str(self.work_dir),
             cache=str(self.cache_dir),
