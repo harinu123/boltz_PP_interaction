@@ -94,14 +94,12 @@ model:
     pairwise_head_width: 32
     pairwise_num_heads: 4
     activation_checkpointing: true
-    offload_to_cpu: false
 
   pairformer_args:
     num_blocks: 36
     num_heads: 16
     dropout: 0.2
     activation_checkpointing: true
-    offload_to_cpu: false
 
   score_model_args:
     sigma_data: 16
@@ -114,7 +112,6 @@ model:
     atom_decoder_heads: 4
     conditioning_transition_layers: 2
     activation_checkpointing: true
-    offload_to_cpu: false
 
   confidence_prediction: false
   confidence_model_args:
