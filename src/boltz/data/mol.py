@@ -162,29 +162,30 @@ def _ensure_atom_names(mol: Mol, code: str | None = None) -> None:
 def _ensure_conformer(mol: Mol) -> None:
     """Guarantee that a molecule carries at least one conformer."""
 
-    if mol.GetNumConformers():
-        return
-
-    params = AllChem.ETKDGv3()
-    params.randomSeed = 0xF00D
-    status = AllChem.EmbedMolecule(mol, params)
-
-    if status != 0:
-        params = AllChem.ETKDG()
-        params.randomSeed = random.randint(0, 2**31 - 1)
+    if not mol.GetNumConformers():
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 0xF00D
         status = AllChem.EmbedMolecule(mol, params)
 
-    if status != 0:
-        with contextlib.suppress(Exception):
-            AllChem.Compute2DCoords(mol)
+        if status != 0:
+            params = AllChem.ETKDG()
+            params.randomSeed = random.randint(0, 2**31 - 1)
+            status = AllChem.EmbedMolecule(mol, params)
 
-    if mol.GetNumConformers():
-        return
+        if status != 0:
+            with contextlib.suppress(Exception):
+                AllChem.Compute2DCoords(mol)
 
-    conformer = Chem.Conformer(mol.GetNumAtoms())
-    for idx in range(mol.GetNumAtoms()):
-        conformer.SetAtomPosition(idx, (0.0, 0.0, 0.0))
-    mol.AddConformer(conformer, assignId=True)
+    if not mol.GetNumConformers():
+        conformer = Chem.Conformer(mol.GetNumAtoms())
+        for idx in range(mol.GetNumAtoms()):
+            conformer.SetAtomPosition(idx, (0.0, 0.0, 0.0))
+        mol.AddConformer(conformer, assignId=True)
+
+    for idx, conformer in enumerate(mol.GetConformers()):
+        if not conformer.HasProp("name"):
+            label = "Computed" if idx == 0 else f"Computed_{idx}"
+            conformer.SetProp("name", label)
 
 
 def _fetch_ccd_molecule(code: str) -> Mol:
