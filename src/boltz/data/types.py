@@ -782,3 +782,4 @@ class Tokenized:
     template_tokens: Optional[dict[str, np.ndarray]] = None
     template_bonds: Optional[dict[str, np.ndarray]] = None
     extra_mols: Optional[dict[str, Mol]] = None
+    esm_profile: Optional[np.ndarray] = None
