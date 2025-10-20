@@ -250,10 +250,15 @@ def process(args) -> None:
     structure_dir = args.outdir / "structures"
     structure_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load clusters
-    with Path(args.clusters).open("r") as f:
-        clusters: dict[str, str] = json.load(f)
-        clusters = {k.lower(): v.lower() for k, v in clusters.items()}
+    # Load clusters if provided; otherwise default to an empty mapping so
+    # downstream lookups fall back to ``-1``.
+    clusters: dict[str, str]
+    if args.clusters is not None:
+        with Path(args.clusters).open("r") as f:
+            clusters = json.load(f)
+            clusters = {k.lower(): v.lower() for k, v in clusters.items()}
+    else:
+        clusters = {}
 
     # Load filters
     filters = [
@@ -273,7 +278,7 @@ def process(args) -> None:
 
     # Get data points
     print("Fetching data...")
-    data = fetch(args.datadir)
+    data = fetch(args.datadir, args.max_file_size)
 
     # Check if we can run in parallel
     max_processes = multiprocessing.cpu_count()
@@ -318,8 +323,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--clusters",
         type=Path,
-        required=True,
-        help="Path to the cluster file.",
+        default=None,
+        help="Optional path to the cluster file.",
     )
     parser.add_argument(
         "--outdir",
@@ -352,8 +357,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max-file-size",
+        "--max_file_size",
+        dest="max_file_size",
         type=int,
         default=None,
+        help="Optional maximum MMCIF file size in bytes.",
     )
     args = parser.parse_args()
     process(args)
