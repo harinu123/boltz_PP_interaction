@@ -108,6 +108,37 @@ def _assign_ccd_atom_metadata(mol: Mol, atom_metadata: Iterable[dict[str, str]])
         atom.SetProp("leaving_atom", "1" if leaving_flag.upper() == "Y" else "0")
 
 
+def _ensure_atom_names(mol: Mol) -> None:
+    """Ensure every atom in the molecule carries a stable name property."""
+
+    used_names: set[str] = set()
+    for atom in mol.GetAtoms():
+        if atom.HasProp("name"):
+            used_names.add(atom.GetProp("name"))
+
+    for atom in mol.GetAtoms():
+        if atom.HasProp("name"):
+            continue
+
+        residue_info = atom.GetPDBResidueInfo()
+        candidate = ""
+        if residue_info is not None:
+            candidate = residue_info.GetName().strip()
+        if candidate and candidate not in used_names:
+            atom.SetProp("name", candidate)
+            used_names.add(candidate)
+            continue
+
+        base = atom.GetSymbol() or "X"
+        suffix = 1
+        candidate = f"{base}{suffix}"
+        while candidate in used_names:
+            suffix += 1
+            candidate = f"{base}{suffix}"
+        atom.SetProp("name", candidate)
+        used_names.add(candidate)
+
+
 def _fetch_ccd_molecule(code: str) -> Mol:
     """Download and parse a CCD ideal-geometry record for the given residue code."""
 
@@ -147,6 +178,8 @@ def _fetch_ccd_molecule(code: str) -> Mol:
             code,
             exc,
         )
+
+    _ensure_atom_names(mol)
 
     return mol
 

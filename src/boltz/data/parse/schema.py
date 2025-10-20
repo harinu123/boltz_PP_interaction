@@ -71,8 +71,9 @@ def _get_atom_name(atom: Chem.Atom) -> str:
             atom.SetProp("name", inferred)
             return inferred
 
-    msg = "Atom is missing the 'name' property and could not infer one"
-    raise KeyError(msg)
+    fallback = f"{atom.GetSymbol()}{atom.GetIdx() + 1}"
+    atom.SetProp("name", fallback)
+    return fallback
 
 PROTEIN_RESIDUE_MASS = {
     "A": 89.09,
