@@ -1,3 +1,4 @@
+import contextlib
 import itertools
 import logging
 import pickle
@@ -9,7 +10,7 @@ import numpy as np
 import requests
 import torch
 from rdkit import Chem
-from rdkit.Chem import Mol
+from rdkit.Chem import AllChem, Mol
 from tqdm import tqdm
 
 from boltz.data import const
@@ -158,6 +159,34 @@ def _ensure_atom_names(mol: Mol, code: str | None = None) -> None:
     used_names.update(expected_names)
 
 
+def _ensure_conformer(mol: Mol) -> None:
+    """Guarantee that a molecule carries at least one conformer."""
+
+    if mol.GetNumConformers():
+        return
+
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 0xF00D
+    status = AllChem.EmbedMolecule(mol, params)
+
+    if status != 0:
+        params = AllChem.ETKDG()
+        params.randomSeed = random.randint(0, 2**31 - 1)
+        status = AllChem.EmbedMolecule(mol, params)
+
+    if status != 0:
+        with contextlib.suppress(Exception):
+            AllChem.Compute2DCoords(mol)
+
+    if mol.GetNumConformers():
+        return
+
+    conformer = Chem.Conformer(mol.GetNumAtoms())
+    for idx in range(mol.GetNumAtoms()):
+        conformer.SetAtomPosition(idx, (0.0, 0.0, 0.0))
+    mol.AddConformer(conformer, assignId=True)
+
+
 def _fetch_ccd_molecule(code: str) -> Mol:
     """Download and parse a CCD ideal-geometry record for the given residue code."""
 
@@ -223,6 +252,7 @@ def _fetch_ccd_molecule(code: str) -> Mol:
         )
 
     _ensure_atom_names(mol, code)
+    _ensure_conformer(mol)
 
     return mol
 
@@ -240,6 +270,7 @@ def get_ccd_component(code: str, cache_dir: str | Path) -> Mol:
             with path.open("rb") as handle:
                 mol: Mol = pickle.load(handle)  # noqa: S301
             _ensure_atom_names(mol, code)
+            _ensure_conformer(mol)
             return mol
         except (RuntimeError, ValueError, pickle.UnpicklingError) as err:
             error_msg = str(err)
@@ -253,6 +284,7 @@ def get_ccd_component(code: str, cache_dir: str | Path) -> Mol:
 
     mol = _fetch_ccd_molecule(code)
     _ensure_atom_names(mol, code)
+    _ensure_conformer(mol)
 
     with path.open("wb") as handle:
         pickle.dump(mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -285,6 +317,7 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
             with path.open("rb") as f:
                 loaded_mols[molecule] = pickle.load(f)  # noqa: S301
             _ensure_atom_names(loaded_mols[molecule], molecule)
+            _ensure_conformer(loaded_mols[molecule])
         except (RuntimeError, ValueError) as err:
             error_msg = str(err)
             if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
@@ -298,6 +331,7 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
 
             fallback_mol = _fetch_ccd_molecule(molecule)
             _ensure_atom_names(fallback_mol, molecule)
+            _ensure_conformer(fallback_mol)
             with path.open("wb") as handle:
                 pickle.dump(fallback_mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
             loaded_mols[molecule] = fallback_mol
