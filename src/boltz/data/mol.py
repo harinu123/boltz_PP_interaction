@@ -1,16 +1,154 @@
 import itertools
+import logging
 import pickle
 import random
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
+import requests
 import torch
+from rdkit import Chem
 from rdkit.Chem import Mol
 from tqdm import tqdm
 
 from boltz.data import const
 from boltz.data.pad import pad_dim
 from boltz.model.loss.confidence import lddt_dist
+
+
+LOGGER = logging.getLogger(__name__)
+
+_CCD_SDF_URL = "https://files.rcsb.org/ligands/download/{code}_ideal.sdf"
+_CCD_CIF_URL = "https://files.rcsb.org/ligands/download/{code}.cif"
+
+
+def _clean_cif_value(raw: str) -> str:
+    """Normalize raw CIF field values."""
+
+    cleaned = raw.strip().strip("'").strip('"')
+    if cleaned in {"?", "."}:
+        return ""
+    return cleaned
+
+
+def _parse_ccd_atom_table(code: str) -> list[dict[str, str]]:
+    """Parse the chem_comp_atom loop from the CCD CIF for metadata."""
+
+    url = _CCD_CIF_URL.format(code=code)
+    LOGGER.info("Downloading CCD metadata for %s from %s", code, url)
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    lines = response.text.splitlines()
+    loop_idx = None
+    for idx, line in enumerate(lines):
+        if line.strip().lower() == "loop_" and idx + 1 < len(lines):
+            next_line = lines[idx + 1].strip().lower()
+            if next_line.startswith("_chem_comp_atom"):
+                loop_idx = idx
+                break
+
+    if loop_idx is None:
+        msg = f"chem_comp_atom loop not found in CCD CIF for {code}"
+        raise RuntimeError(msg)
+
+    headers: list[str] = []
+    entries: list[dict[str, str]] = []
+
+    cursor = loop_idx + 1
+    while cursor < len(lines):
+        line = lines[cursor].strip()
+        if not line:
+            cursor += 1
+            continue
+        if not line.startswith("_chem_comp_atom"):
+            break
+        headers.append(line.split(".", 1)[1])
+        cursor += 1
+
+    while cursor < len(lines):
+        line = lines[cursor].strip()
+        if not line or line.startswith("#"):
+            break
+        if line.lower() == "loop_" or line.startswith("_"):
+            break
+
+        parts = line.split()
+        if len(parts) < len(headers):
+            msg = (
+                "Unexpected CCD atom row length for %s: got %d values, expected %d"
+                % (code, len(parts), len(headers))
+            )
+            raise RuntimeError(msg)
+
+        entry = {
+            header: _clean_cif_value(value)
+            for header, value in zip(headers, parts)
+        }
+        entries.append(entry)
+        cursor += 1
+
+    if not entries:
+        msg = f"No chem_comp_atom records parsed for {code}"
+        raise RuntimeError(msg)
+
+    return entries
+
+
+def _assign_ccd_atom_metadata(mol: Mol, atom_metadata: Iterable[dict[str, str]]) -> None:
+    """Populate RDKit atom properties using CCD metadata."""
+
+    for atom, metadata in zip(mol.GetAtoms(), atom_metadata):
+        atom_name = metadata.get("atom_id") or metadata.get("pdbx_component_atom_id")
+        if atom_name:
+            atom.SetProp("name", atom_name)
+
+        leaving_flag = metadata.get("pdbx_leaving_atom_flag", "")
+        atom.SetProp("leaving_atom", "1" if leaving_flag.upper() == "Y" else "0")
+
+
+def _fetch_ccd_molecule(code: str) -> Mol:
+    """Download and parse a CCD ideal-geometry record for the given residue code."""
+
+    if code == "UNK":
+        mol = Chem.Mol()
+        mol.SetProp("_Name", code)
+        return mol
+
+    url = _CCD_SDF_URL.format(code=code)
+    LOGGER.info("Downloading CCD definition for %s from %s", code, url)
+
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    mol_block = response.text
+    mol = Chem.MolFromMolBlock(mol_block, sanitize=False, removeHs=False)
+    if mol is None:
+        msg = f"Failed to parse CCD SDF for {code}"
+        raise RuntimeError(msg)
+
+    Chem.SanitizeMol(mol)
+    mol.SetProp("_Name", code)
+
+    try:
+        atom_metadata = _parse_ccd_atom_table(code)
+        if len(atom_metadata) != mol.GetNumAtoms():
+            LOGGER.warning(
+                "CCD atom metadata count %s does not match molecule atom count %s for %s",
+                len(atom_metadata),
+                mol.GetNumAtoms(),
+                code,
+            )
+        _assign_ccd_atom_metadata(mol, atom_metadata)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning(
+            "Failed to enrich CCD molecule %s with metadata: %s",
+            code,
+            exc,
+        )
+
+    return mol
 
 
 def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
@@ -34,8 +172,24 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
         if not path.exists():
             msg = f"CCD component {molecule} not found!"
             raise ValueError(msg)
-        with path.open("rb") as f:
-            loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+        try:
+            with path.open("rb") as f:
+                loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+        except (RuntimeError, ValueError) as err:
+            error_msg = str(err)
+            if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
+                raise
+
+            LOGGER.warning(
+                "Falling back to CCD download for %s due to pickle error: %s",
+                molecule,
+                error_msg,
+            )
+
+            fallback_mol = _fetch_ccd_molecule(molecule)
+            with path.open("wb") as handle:
+                pickle.dump(fallback_mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            loaded_mols[molecule] = fallback_mol
     return loaded_mols
 
 
