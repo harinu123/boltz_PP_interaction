@@ -49,6 +49,7 @@ python scripts/train_hybrid_affinity.py \
 
 Key behaviors:
 - The script downloads the Protein_SAbDab CSV directly from the Harvard Dataverse (ID 4167357), caches it under `--dataset-dir`, and logs the train/validation/test sizes.
+- It keeps only complexes whose antigen sequence contains at least 17 amino acids (roughly the antibody–antigen subset used in TDC). Override this with `--min-antigen-length 0` to retain all 493 entries.
 - It caches mean-pooled ESM embeddings for every antibody heavy/light chain and antigen sequence (`--embedding-cache`).
 - It generates temporary YAML inputs for Boltz, runs affinity inference, and collects binder features (Boltz caches live under `--cache-dir`, defaulting to `~/.boltz`).
 - It assembles hybrid feature matrices that concatenate Boltz outputs and language embeddings, normalizes them using the training split, and trains a two-layer MLP regressor (`--hidden-dim`, `--dropout`, `--learning-rate`, `--weight-decay`, `--epochs`).

@@ -439,9 +439,26 @@ def compute_log_affinity(value: float, already_log: bool) -> float:
     return float(math.log10(clipped))
 
 
-def load_dataset(data_dir: Path = _DEFAULT_DATA_DIR) -> dict[str, list[InteractionExample]]:
+def load_dataset(
+    data_dir: Path = _DEFAULT_DATA_DIR,
+    min_antigen_length: Optional[int] = None,
+) -> dict[str, list[InteractionExample]]:
     csv_path = download_sabdab_dataset(data_dir)
     frame = _load_sabdab_frame(csv_path)
+
+    if min_antigen_length is not None and min_antigen_length > 0:
+        antigen_col = resolve_column(frame, ["X2", "Antigen", "antigen", "antigen_seq"])
+        lengths = frame[antigen_col].map(lambda entry: len(sanitize_sequence(str(entry))))
+        before = len(frame)
+        mask = lengths >= int(min_antigen_length)
+        frame = frame[mask].reset_index(drop=True)
+        LOGGER.info(
+            "Filtered Protein_SAbDab to antigen length >= %d: %d -> %d entries",
+            min_antigen_length,
+            before,
+            len(frame),
+        )
+
     splits = _partition_frame(frame)
 
     processed: dict[str, list[InteractionExample]] = {}
@@ -733,6 +750,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--boltz-checkpoint", type=str, default=None)
     parser.add_argument("--boltz-affinity-checkpoint", type=str, default=None)
     parser.add_argument("--boltz-no-kernels", action="store_true")
+    parser.add_argument(
+        "--min-antigen-length",
+        type=int,
+        default=17,
+        help=(
+            "Discard complexes whose antigen sequence is shorter than this length. "
+            "Set to 0 to keep every Protein_SAbDab entry."
+        ),
+    )
     parser.add_argument("--epochs", type=int, default=75)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -758,7 +784,10 @@ def main() -> None:
     LOGGER.info("Loading Protein_SAbDab dataset")
     dataset_dir = args.dataset_dir.expanduser()
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    examples_by_split = load_dataset(dataset_dir)
+    examples_by_split = load_dataset(
+        dataset_dir,
+        min_antigen_length=args.min_antigen_length,
+    )
     all_examples = [example for split in examples_by_split.values() for example in split]
 
     LOGGER.info("Preparing ESM2 embeddings for %d unique sequences", len(all_examples))
