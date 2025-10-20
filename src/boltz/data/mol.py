@@ -1,16 +1,295 @@
+import contextlib
 import itertools
+import logging
 import pickle
 import random
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
+import requests
 import torch
-from rdkit.Chem import Mol
+from rdkit import Chem
+from rdkit.Chem import AllChem, Mol
 from tqdm import tqdm
 
 from boltz.data import const
 from boltz.data.pad import pad_dim
 from boltz.model.loss.confidence import lddt_dist
+
+
+LOGGER = logging.getLogger(__name__)
+
+_CCD_SDF_URL = "https://files.rcsb.org/ligands/download/{code}_ideal.sdf"
+_CCD_CIF_URL = "https://files.rcsb.org/ligands/download/{code}.cif"
+
+
+def _clean_cif_value(raw: str) -> str:
+    """Normalize raw CIF field values."""
+
+    cleaned = raw.strip().strip("'").strip('"')
+    if cleaned in {"?", "."}:
+        return ""
+    return cleaned
+
+
+def _parse_ccd_atom_table(code: str) -> list[dict[str, str]]:
+    """Parse the chem_comp_atom loop from the CCD CIF for metadata."""
+
+    url = _CCD_CIF_URL.format(code=code)
+    LOGGER.info("Downloading CCD metadata for %s from %s", code, url)
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    lines = response.text.splitlines()
+    loop_idx = None
+    for idx, line in enumerate(lines):
+        if line.strip().lower() == "loop_" and idx + 1 < len(lines):
+            next_line = lines[idx + 1].strip().lower()
+            if next_line.startswith("_chem_comp_atom"):
+                loop_idx = idx
+                break
+
+    if loop_idx is None:
+        msg = f"chem_comp_atom loop not found in CCD CIF for {code}"
+        raise RuntimeError(msg)
+
+    headers: list[str] = []
+    entries: list[dict[str, str]] = []
+
+    cursor = loop_idx + 1
+    while cursor < len(lines):
+        line = lines[cursor].strip()
+        if not line:
+            cursor += 1
+            continue
+        if not line.startswith("_chem_comp_atom"):
+            break
+        headers.append(line.split(".", 1)[1])
+        cursor += 1
+
+    while cursor < len(lines):
+        line = lines[cursor].strip()
+        if not line or line.startswith("#"):
+            break
+        if line.lower() == "loop_" or line.startswith("_"):
+            break
+
+        parts = line.split()
+        if len(parts) < len(headers):
+            msg = (
+                "Unexpected CCD atom row length for %s: got %d values, expected %d"
+                % (code, len(parts), len(headers))
+            )
+            raise RuntimeError(msg)
+
+        entry = {
+            header: _clean_cif_value(value)
+            for header, value in zip(headers, parts)
+        }
+        entries.append(entry)
+        cursor += 1
+
+    if not entries:
+        msg = f"No chem_comp_atom records parsed for {code}"
+        raise RuntimeError(msg)
+
+    return entries
+
+
+def _assign_ccd_atom_metadata(mol: Mol, atom_metadata: Iterable[dict[str, str]]) -> None:
+    """Populate RDKit atom properties using CCD metadata."""
+
+    for atom, metadata in zip(mol.GetAtoms(), atom_metadata):
+        atom_name = metadata.get("atom_id") or metadata.get("pdbx_component_atom_id")
+        if atom_name:
+            atom.SetProp("name", atom_name)
+
+        leaving_flag = metadata.get("pdbx_leaving_atom_flag", "")
+        atom.SetProp("leaving_atom", "1" if leaving_flag.upper() == "Y" else "0")
+
+
+def _ensure_atom_names(mol: Mol, code: str | None = None) -> None:
+    """Ensure every atom in the molecule carries a stable name property."""
+
+    used_names: set[str] = set()
+    for atom in mol.GetAtoms():
+        if atom.HasProp("name"):
+            used_names.add(atom.GetProp("name"))
+
+    for atom in mol.GetAtoms():
+        if atom.HasProp("name"):
+            continue
+
+        residue_info = atom.GetPDBResidueInfo()
+        candidate = ""
+        if residue_info is not None:
+            candidate = residue_info.GetName().strip()
+        if candidate and candidate not in used_names:
+            atom.SetProp("name", candidate)
+            used_names.add(candidate)
+            continue
+
+        base = atom.GetSymbol() or "X"
+        suffix = 1
+        candidate = f"{base}{suffix}"
+        while candidate in used_names:
+            suffix += 1
+            candidate = f"{base}{suffix}"
+        atom.SetProp("name", candidate)
+        used_names.add(candidate)
+
+    if code is None:
+        return
+
+    expected_names = const.ref_atoms.get(code)
+    if not expected_names:
+        return
+
+    heavy_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+    if len(expected_names) > len(heavy_atoms):
+        return
+
+    missing = [name for name in expected_names if name not in used_names]
+    if not missing:
+        return
+
+    for atom, name in zip(heavy_atoms, expected_names):
+        atom.SetProp("name", name)
+    used_names.update(expected_names)
+
+
+def _ensure_conformer(mol: Mol) -> None:
+    """Guarantee that a molecule carries at least one conformer."""
+
+    if mol.GetNumConformers():
+        return
+
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 0xF00D
+    status = AllChem.EmbedMolecule(mol, params)
+
+    if status != 0:
+        params = AllChem.ETKDG()
+        params.randomSeed = random.randint(0, 2**31 - 1)
+        status = AllChem.EmbedMolecule(mol, params)
+
+    if status != 0:
+        with contextlib.suppress(Exception):
+            AllChem.Compute2DCoords(mol)
+
+    if mol.GetNumConformers():
+        return
+
+    conformer = Chem.Conformer(mol.GetNumAtoms())
+    for idx in range(mol.GetNumAtoms()):
+        conformer.SetAtomPosition(idx, (0.0, 0.0, 0.0))
+    mol.AddConformer(conformer, assignId=True)
+
+
+def _fetch_ccd_molecule(code: str) -> Mol:
+    """Download and parse a CCD ideal-geometry record for the given residue code."""
+
+    if code == "UNK":
+        # Construct a minimal placeholder residue that mimics a protein backbone.
+        builder = Chem.RWMol()
+        atom_specs = [
+            ("N", Chem.Atom(7)),
+            ("CA", Chem.Atom(6)),
+            ("C", Chem.Atom(6)),
+            ("O", Chem.Atom(8)),
+            ("CB", Chem.Atom(6)),
+        ]
+
+        indices: list[int] = []
+        for name, atom in atom_specs:
+            idx = builder.AddAtom(atom)
+            rd_atom = builder.GetAtomWithIdx(idx)
+            rd_atom.SetProp("name", name)
+            rd_atom.SetProp("leaving_atom", "0")
+            indices.append(idx)
+
+        # Roughly approximate the peptide backbone connectivity.
+        bonds = [(0, 1), (1, 2), (2, 3), (1, 4)]
+        for start, end in bonds:
+            builder.AddBond(indices[start], indices[end], Chem.BondType.SINGLE)
+
+        mol = builder.GetMol()
+        Chem.SanitizeMol(mol)
+        mol.SetProp("_Name", code)
+        return mol
+
+    url = _CCD_SDF_URL.format(code=code)
+    LOGGER.info("Downloading CCD definition for %s from %s", code, url)
+
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    mol_block = response.text
+    mol = Chem.MolFromMolBlock(mol_block, sanitize=False, removeHs=False)
+    if mol is None:
+        msg = f"Failed to parse CCD SDF for {code}"
+        raise RuntimeError(msg)
+
+    Chem.SanitizeMol(mol)
+    mol.SetProp("_Name", code)
+
+    try:
+        atom_metadata = _parse_ccd_atom_table(code)
+        if len(atom_metadata) != mol.GetNumAtoms():
+            LOGGER.warning(
+                "CCD atom metadata count %s does not match molecule atom count %s for %s",
+                len(atom_metadata),
+                mol.GetNumAtoms(),
+                code,
+            )
+        _assign_ccd_atom_metadata(mol, atom_metadata)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning(
+            "Failed to enrich CCD molecule %s with metadata: %s",
+            code,
+            exc,
+        )
+
+    _ensure_atom_names(mol, code)
+    _ensure_conformer(mol)
+
+    return mol
+
+
+def get_ccd_component(code: str, cache_dir: str | Path) -> Mol:
+    """Load a CCD component from the local cache, downloading it if necessary."""
+
+    cache_root = Path(cache_dir).expanduser()
+    mol_dir = cache_root / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    path = mol_dir / f"{code}.pkl"
+
+    if path.exists():
+        try:
+            with path.open("rb") as handle:
+                mol: Mol = pickle.load(handle)  # noqa: S301
+            _ensure_atom_names(mol, code)
+            _ensure_conformer(mol)
+            return mol
+        except (RuntimeError, ValueError, pickle.UnpicklingError) as err:
+            error_msg = str(err)
+            if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
+                raise
+            LOGGER.warning(
+                "Falling back to CCD download for %s due to pickle error: %s",
+                code,
+                error_msg,
+            )
+
+    mol = _fetch_ccd_molecule(code)
+    _ensure_atom_names(mol, code)
+    _ensure_conformer(mol)
+
+    with path.open("wb") as handle:
+        pickle.dump(mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    return mol
 
 
 def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
@@ -34,8 +313,28 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
         if not path.exists():
             msg = f"CCD component {molecule} not found!"
             raise ValueError(msg)
-        with path.open("rb") as f:
-            loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+        try:
+            with path.open("rb") as f:
+                loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+            _ensure_atom_names(loaded_mols[molecule], molecule)
+            _ensure_conformer(loaded_mols[molecule])
+        except (RuntimeError, ValueError) as err:
+            error_msg = str(err)
+            if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
+                raise
+
+            LOGGER.warning(
+                "Falling back to CCD download for %s due to pickle error: %s",
+                molecule,
+                error_msg,
+            )
+
+            fallback_mol = _fetch_ccd_molecule(molecule)
+            _ensure_atom_names(fallback_mol, molecule)
+            _ensure_conformer(fallback_mol)
+            with path.open("wb") as handle:
+                pickle.dump(fallback_mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            loaded_mols[molecule] = fallback_mol
     return loaded_mols
 
 
