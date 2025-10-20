@@ -108,7 +108,7 @@ def _assign_ccd_atom_metadata(mol: Mol, atom_metadata: Iterable[dict[str, str]])
         atom.SetProp("leaving_atom", "1" if leaving_flag.upper() == "Y" else "0")
 
 
-def _ensure_atom_names(mol: Mol) -> None:
+def _ensure_atom_names(mol: Mol, code: str | None = None) -> None:
     """Ensure every atom in the molecule carries a stable name property."""
 
     used_names: set[str] = set()
@@ -137,6 +137,25 @@ def _ensure_atom_names(mol: Mol) -> None:
             candidate = f"{base}{suffix}"
         atom.SetProp("name", candidate)
         used_names.add(candidate)
+
+    if code is None:
+        return
+
+    expected_names = const.ref_atoms.get(code)
+    if not expected_names:
+        return
+
+    heavy_atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() > 1]
+    if len(expected_names) > len(heavy_atoms):
+        return
+
+    missing = [name for name in expected_names if name not in used_names]
+    if not missing:
+        return
+
+    for atom, name in zip(heavy_atoms, expected_names):
+        atom.SetProp("name", name)
+    used_names.update(expected_names)
 
 
 def _fetch_ccd_molecule(code: str) -> Mol:
@@ -203,7 +222,7 @@ def _fetch_ccd_molecule(code: str) -> Mol:
             exc,
         )
 
-    _ensure_atom_names(mol)
+    _ensure_atom_names(mol, code)
 
     return mol
 
@@ -232,6 +251,7 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
         try:
             with path.open("rb") as f:
                 loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+            _ensure_atom_names(loaded_mols[molecule], molecule)
         except (RuntimeError, ValueError) as err:
             error_msg = str(err)
             if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
@@ -244,6 +264,7 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
             )
 
             fallback_mol = _fetch_ccd_molecule(molecule)
+            _ensure_atom_names(fallback_mol, molecule)
             with path.open("wb") as handle:
                 pickle.dump(fallback_mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
             loaded_mols[molecule] = fallback_mol
