@@ -1,6 +1,8 @@
 import argparse
 import json
+import logging
 import multiprocessing
+import os
 import pickle
 import traceback
 from dataclasses import asdict, dataclass, replace
@@ -12,7 +14,7 @@ import numpy as np
 import rdkit
 from mmcif import parse_mmcif
 from p_tqdm import p_umap
-from redis import Redis
+from redis import Redis, exceptions as redis_exceptions
 from tqdm import tqdm
 
 from boltz.data.filter.static.filter import StaticFilter
@@ -24,6 +26,10 @@ from boltz.data.filter.static.polymer import (
     UnknownFilter,
 )
 from boltz.data.types import ChainInfo, InterfaceInfo, Record, Target
+from boltz.data.mol import get_ccd_component
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,19 +43,72 @@ class PDB:
 class Resource:
     """A shared resource for processing."""
 
-    def __init__(self, host: str, port: int) -> None:
-        """Initialize the redis database."""
-        self._redis = Redis(host=host, port=port)
+    def __init__(self, host: str, port: int, cache_dir: Path) -> None:
+        """Initialize the redis database and local CCD cache."""
+
+        self._local_cache: dict[str, Any] = {}
+        self._cache_dir = cache_dir.expanduser()
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self._redis: Optional[Redis] = Redis(host=host, port=port)
+            self._redis.ping()
+        except (redis_exceptions.RedisError, OSError) as exc:
+            LOGGER.warning(
+                "Redis unavailable at %s:%s (%s). Falling back to local CCD cache.",
+                host,
+                port,
+                exc,
+            )
+            self._redis = None
+
+    def _load_locally(self, key: str) -> Any:  # noqa: ANN401
+        cached = self._local_cache.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            mol = get_ccd_component(key, self._cache_dir)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Failed to load CCD component %s: %s", key, exc)
+            return None
+
+        self._local_cache[key] = mol
+        return mol
 
     def get(self, key: str) -> Any:  # noqa: ANN401
-        """Get an item from the Redis database."""
-        value = self._redis.get(key)
-        if value is not None:
-            value = pickle.loads(value)  # noqa: S301
-        return value
+        """Get an item from the Redis database or the local cache."""
+
+        if self._redis is not None:
+            try:
+                value = self._redis.get(key)
+            except redis_exceptions.RedisError as exc:
+                LOGGER.warning(
+                    "Redis query failed for %s (%s). Disabling redis cache.",
+                    key,
+                    exc,
+                )
+                self._redis = None
+            else:
+                if value is not None:
+                    try:
+                        return pickle.loads(value)  # noqa: S301
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Failed to unpickle redis entry for %s: %s. Clearing cache entry.",
+                            key,
+                            exc,
+                        )
+                        try:
+                            self._redis.delete(key)
+                        except redis_exceptions.RedisError:
+                            self._redis = None
+
+        return self._load_locally(key)
 
     def __getitem__(self, key: str) -> Any:  # noqa: ANN401
         """Get an item from the resource."""
+
         out = self.get(key)
         if out is None:
             raise KeyError(key)
@@ -274,7 +333,10 @@ def process(args) -> None:
     rdkit.Chem.SetDefaultPickleProperties(pickle_option)
 
     # Load shared data from redis
-    resource = Resource(host=args.redis_host, port=args.redis_port)
+    cache_dir = args.cache_dir
+    if cache_dir is None:
+        cache_dir = Path(os.environ.get("BOLTZ_CACHE", "~/.boltz"))
+    resource = Resource(host=args.redis_host, port=args.redis_port, cache_dir=cache_dir)
 
     # Get data points
     print("Fetching data...")
@@ -362,6 +424,15 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Optional maximum MMCIF file size in bytes.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(os.environ.get("BOLTZ_CACHE", "~/.boltz")),
+        help=(
+            "Directory for cached CCD molecules. Defaults to $BOLTZ_CACHE or ~/.boltz"
+            " when unspecified."
+        ),
     )
     args = parser.parse_args()
     process(args)

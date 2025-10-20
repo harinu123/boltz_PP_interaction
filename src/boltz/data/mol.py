@@ -227,6 +227,39 @@ def _fetch_ccd_molecule(code: str) -> Mol:
     return mol
 
 
+def get_ccd_component(code: str, cache_dir: str | Path) -> Mol:
+    """Load a CCD component from the local cache, downloading it if necessary."""
+
+    cache_root = Path(cache_dir).expanduser()
+    mol_dir = cache_root / "molecules"
+    mol_dir.mkdir(parents=True, exist_ok=True)
+    path = mol_dir / f"{code}.pkl"
+
+    if path.exists():
+        try:
+            with path.open("rb") as handle:
+                mol: Mol = pickle.load(handle)  # noqa: S301
+            _ensure_atom_names(mol, code)
+            return mol
+        except (RuntimeError, ValueError, pickle.UnpicklingError) as err:
+            error_msg = str(err)
+            if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
+                raise
+            LOGGER.warning(
+                "Falling back to CCD download for %s due to pickle error: %s",
+                code,
+                error_msg,
+            )
+
+    mol = _fetch_ccd_molecule(code)
+    _ensure_atom_names(mol, code)
+
+    with path.open("wb") as handle:
+        pickle.dump(mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    return mol
+
+
 def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
     """Load the given input data.
 

@@ -67,10 +67,14 @@ profile that is blended with the traditional MSA statistics.
    python scripts/process/rcsb.py \
        --datadir ~/sabdab_finetune/raw/mmcif \
        --outdir  ~/sabdab_finetune/targets \
+       --cache-dir "$BOLTZ_CACHE" \
        --max_file_size 2000000
    ```
-   This step writes `structures/*.npz` and `records/*.json` inside the
-   `targets` directory, together with a consolidated `manifest.json`.
+   If a Redis instance is unavailable the script now falls back to the
+   specified cache directory, pulling CCD components on demand and storing
+   them under `molecules/`. This step writes `structures/*.npz` and
+   `records/*.json` inside the `targets` directory, together with a
+   consolidated `manifest.json`.
 
 5. Generate (or reuse) single-sequence MSAs. When no evolutionary depth is
    available, Boltz will fall back to dummy alignments. You can therefore place
