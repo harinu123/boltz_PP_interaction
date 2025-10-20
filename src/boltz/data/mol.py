@@ -1,16 +1,49 @@
 import itertools
+import logging
 import pickle
 import random
 from pathlib import Path
 
 import numpy as np
+import requests
 import torch
+from rdkit import Chem
 from rdkit.Chem import Mol
 from tqdm import tqdm
 
 from boltz.data import const
 from boltz.data.pad import pad_dim
 from boltz.model.loss.confidence import lddt_dist
+
+
+LOGGER = logging.getLogger(__name__)
+
+_CCD_SDF_URL = "https://files.rcsb.org/ligands/download/{code}_ideal.sdf"
+
+
+def _fetch_ccd_molecule(code: str) -> Mol:
+    """Download and parse a CCD ideal-geometry record for the given residue code."""
+
+    if code == "UNK":
+        mol = Chem.Mol()
+        mol.SetProp("_Name", code)
+        return mol
+
+    url = _CCD_SDF_URL.format(code=code)
+    LOGGER.info("Downloading CCD definition for %s from %s", code, url)
+
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+
+    mol_block = response.text
+    mol = Chem.MolFromMolBlock(mol_block, sanitize=False, removeHs=False)
+    if mol is None:
+        msg = f"Failed to parse CCD SDF for {code}"
+        raise RuntimeError(msg)
+
+    Chem.SanitizeMol(mol)
+    mol.SetProp("_Name", code)
+    return mol
 
 
 def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
@@ -34,8 +67,24 @@ def load_molecules(moldir: str, molecules: list[str]) -> dict[str, Mol]:
         if not path.exists():
             msg = f"CCD component {molecule} not found!"
             raise ValueError(msg)
-        with path.open("rb") as f:
-            loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+        try:
+            with path.open("rb") as f:
+                loaded_mols[molecule] = pickle.load(f)  # noqa: S301
+        except (RuntimeError, ValueError) as err:
+            error_msg = str(err)
+            if "Bad pickle format" not in error_msg and "Depickling" not in error_msg:
+                raise
+
+            LOGGER.warning(
+                "Falling back to CCD download for %s due to pickle error: %s",
+                molecule,
+                error_msg,
+            )
+
+            fallback_mol = _fetch_ccd_molecule(molecule)
+            with path.open("wb") as handle:
+                pickle.dump(fallback_mol, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            loaded_mols[molecule] = fallback_mol
     return loaded_mols
 
 
