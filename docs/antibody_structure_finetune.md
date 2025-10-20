@@ -59,7 +59,9 @@ profile that is blended with the traditional MSA statistics.
 
 4. Process the mmCIF structures into Boltz training records. The standard
    preprocessing utilities that ship with Boltz can be repurposed for the
-   antibody subset:
+   antibody subset. If you have a precomputed clustering manifest you can pass
+   it via `--clusters`, otherwise omit the flag and every chain will fall back
+   to the default cluster id of `-1`:
    ```bash
    export BOLTZ_CACHE=~/boltz_cache
    python scripts/process/rcsb.py \
