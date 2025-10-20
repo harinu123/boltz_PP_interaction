@@ -251,12 +251,16 @@ redis-server --dbfilename ccd.rdb --port 7777
 
 In a separate shell, run the processing script, make sure to use the `clustering/clustering.json` file you previously created.
 ```bash
-python rcsb.py --datadir PATH_TO_MMCIF_DIR --cluster clustering/clustering.json --outdir YOUR_OUTPUT_DIR --use-assembly --max-file-size 7000000 --redis-port 7777
+python rcsb.py --datadir PATH_TO_MMCIF_DIR --cluster clustering/clustering.json --outdir YOUR_OUTPUT_DIR --use-assembly --cache-dir $BOLTZ_CACHE --max-file-size 7000000 --redis-port 7777
 ```
 
 > Important: the script looks for `.cif` or `cif.gz` files in the directory, make sure to match this extension and file format.
 
 > We skip a few of the very large files, you can modify this using the `--max-file-size` flag, or by removing it.
+
+> Redis is optional: when it cannot be reached the script falls back to the
+> `--cache-dir` location (defaulting to `~/.boltz`) and fetches CCD molecules on
+> demand, caching them under `molecules/` for subsequent runs.
 
 #### Step 8: Ready!
 
