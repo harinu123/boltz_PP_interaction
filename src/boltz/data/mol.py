@@ -143,7 +143,31 @@ def _fetch_ccd_molecule(code: str) -> Mol:
     """Download and parse a CCD ideal-geometry record for the given residue code."""
 
     if code == "UNK":
-        mol = Chem.Mol()
+        # Construct a minimal placeholder residue that mimics a protein backbone.
+        builder = Chem.RWMol()
+        atom_specs = [
+            ("N", Chem.Atom(7)),
+            ("CA", Chem.Atom(6)),
+            ("C", Chem.Atom(6)),
+            ("O", Chem.Atom(8)),
+            ("CB", Chem.Atom(6)),
+        ]
+
+        indices: list[int] = []
+        for name, atom in atom_specs:
+            idx = builder.AddAtom(atom)
+            rd_atom = builder.GetAtomWithIdx(idx)
+            rd_atom.SetProp("name", name)
+            rd_atom.SetProp("leaving_atom", "0")
+            indices.append(idx)
+
+        # Roughly approximate the peptide backbone connectivity.
+        bonds = [(0, 1), (1, 2), (2, 3), (1, 4)]
+        for start, end in bonds:
+            builder.AddBond(indices[start], indices[end], Chem.BondType.SINGLE)
+
+        mol = builder.GetMol()
+        Chem.SanitizeMol(mol)
         mol.SetProp("_Name", code)
         return mol
 
