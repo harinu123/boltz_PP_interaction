@@ -278,7 +278,7 @@ def process(args) -> None:
 
     # Get data points
     print("Fetching data...")
-    data = fetch(args.datadir)
+    data = fetch(args.datadir, args.max_file_size)
 
     # Check if we can run in parallel
     max_processes = multiprocessing.cpu_count()
@@ -357,8 +357,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--max-file-size",
+        "--max_file_size",
+        dest="max_file_size",
         type=int,
         default=None,
+        help="Optional maximum MMCIF file size in bytes.",
     )
     args = parser.parse_args()
     process(args)
