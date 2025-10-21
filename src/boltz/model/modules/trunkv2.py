@@ -613,10 +613,14 @@ class MSAModule(nn.Module):
 
         # Load relevant features
         msa = feats["msa"]
-        msa = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)
-        has_deletion = feats["has_deletion"].unsqueeze(-1)
+        if msa.shape[-1] != const.num_tokens or msa.ndim == 3:
+            msa = torch.nn.functional.one_hot(
+                msa.long(), num_classes=const.num_tokens
+            )
+        msa = msa.float()
+        has_deletion = feats["has_deletion"].unsqueeze(-1).float()
         deletion_value = feats["deletion_value"].unsqueeze(-1)
-        is_paired = feats["msa_paired"].unsqueeze(-1)
+        is_paired = feats["msa_paired"].unsqueeze(-1).float()
         msa_mask = feats["msa_mask"]
         token_mask = feats["token_pad_mask"].float()
         token_mask = token_mask[:, :, None] * token_mask[:, None, :]
