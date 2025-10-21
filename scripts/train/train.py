@@ -178,6 +178,18 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
     data_module = BoltzTrainingDataModule(data_config)
     model_module = cfg.model
 
+    val_group_count = len(getattr(data_module, "val_group_mapper", {}))
+    if hasattr(model_module, "num_val_datasets"):
+        model_module.num_val_datasets = val_group_count
+        if hasattr(model_module, "hparams"):
+            try:
+                model_module.hparams["num_val_datasets"] = val_group_count
+            except TypeError:
+                try:
+                    setattr(model_module.hparams, "num_val_datasets", val_group_count)
+                except AttributeError:
+                    pass
+
     if cfg.pretrained and not cfg.resume:
         pretrained_path = _ensure_pretrained_checkpoint(cfg.pretrained)
 

@@ -726,8 +726,9 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
             return_symmetries=cfg.return_train_symmetries,
             compute_constraint_features=cfg.compute_constraint_features,
         )
+        val_datasets = train if cfg.overfit is not None else val
         self._val_set = ValidationDataset(
-            datasets=train if cfg.overfit is not None else val,
+            datasets=val_datasets,
             seed=cfg.random_seed,
             max_atoms=cfg.max_atoms,
             max_tokens=cfg.max_tokens,
@@ -747,6 +748,16 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
             binder_pocket_cutoff=cfg.binder_pocket_cutoff,
             compute_constraint_features=cfg.compute_constraint_features,
         )
+
+        # Map each validation dataset index to a label used by Boltz validators.
+        self.val_group_mapper: dict[int, dict[str, str]] = {}
+        for idx, dataset in enumerate(val_datasets):
+            base_label = dataset.target_dir.name or "dataset"
+            label = f"{base_label}_{idx}" if base_label else f"dataset_{idx}"
+            self.val_group_mapper[idx] = {
+                "label": label,
+                "target_dir": str(dataset.target_dir),
+            }
 
     def setup(self, stage: Optional[str] = None) -> None:
         """Run the setup for the DataModule.
