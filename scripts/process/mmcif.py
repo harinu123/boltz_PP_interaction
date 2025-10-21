@@ -1024,6 +1024,7 @@ def parse_mmcif(  # noqa: C901, PLR0915, PLR0912
                 atom_num,
                 res_idx,
                 res_num,
+                0,
             )
         )
         chain_to_idx[chain.name] = asym_id
