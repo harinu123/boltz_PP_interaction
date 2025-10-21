@@ -6,8 +6,8 @@ trainer:
   max_epochs: -1
   accumulate_grad_batches: 32
 
-output: SET_FINETUNE_OUTPUT_DIR
-pretrained: PATH_TO_BOLTZ2_CHECKPOINT
+output: ${oc.env:BOLTZ_OUTPUT,SET_FINETUNE_OUTPUT_DIR}
+pretrained: ${oc.env:BOLTZ_PRETRAINED,PATH_TO_BOLTZ2_CHECKPOINT}
 resume: null
 disable_checkpoint: false
 matmul_precision: null
@@ -16,8 +16,8 @@ save_top_k: -1
 data:
   datasets:
     - _target_: boltz.data.module.training.DatasetConfig
-      target_dir: SABDAB_PROCESSED_TARGETS
-      msa_dir: SABDAB_PROCESSED_MSAS
+      target_dir: ${oc.env:SABDAB_PROCESSED_TARGETS,SABDAB_PROCESSED_TARGETS}
+      msa_dir: ${oc.env:SABDAB_PROCESSED_MSAS,SABDAB_PROCESSED_MSAS}
       prob: 1.0
       sampler:
         _target_: boltz.data.sample.cluster.ClusterSampler

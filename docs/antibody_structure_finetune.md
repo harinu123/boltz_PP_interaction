@@ -108,21 +108,23 @@ profile that is blended with the traditional MSA statistics.
 ## 2. Launch fine-tuning with ESM guidance
 
 1. Choose a Boltz checkpoint (e.g., the public `boltz2_conf.ckpt`) and point the
-   new configuration to your processed directories by editing
-   `scripts/train/configs/antibody_structure.yaml`:
-   ```yaml
-   output: ~/sabdab_finetune/output
-   pretrained: ~/weights/boltz2_conf.ckpt
-   data:
-     datasets:
-       - target_dir: ~/sabdab_finetune/targets
-         msa_dir: ~/sabdab_finetune/msas
-   data:
-     symmetries: scripts/train/assets/symmetry.pkl
+   new configuration to your processed directories. The default config expects
+   the directories to be provided via environment variables, so you can export
+   them without touching the YAML:
+   ```bash
+   export SABDAB_PROCESSED_TARGETS=~/sabdab_finetune/targets
+   export SABDAB_PROCESSED_MSAS=~/sabdab_finetune/msas
+   export BOLTZ_OUTPUT=~/sabdab_finetune/output
+   export BOLTZ_PRETRAINED=~/weights/boltz2_conf.ckpt
    ```
+   Alternatively, you can replace the placeholders (`SABDAB_PROCESSED_TARGETS`,
+   `SABDAB_PROCESSED_MSAS`, etc.) directly in
+   `scripts/train/configs/antibody_structure.yaml` with absolute paths.
 
 2. Run the training script with the antibody-specific configuration:
    ```bash
+   BOLTZ_OUTPUT=~/sabdab_finetune/output \
+   BOLTZ_PRETRAINED=~/weights/boltz2_conf.ckpt \
    python scripts/train/train.py scripts/train/configs/antibody_structure.yaml
    ```
 

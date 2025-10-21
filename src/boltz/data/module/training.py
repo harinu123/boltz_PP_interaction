@@ -1,4 +1,5 @@
 from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -92,6 +93,13 @@ class Dataset:
     cropper: Cropper
     tokenizer: Tokenizer
     featurizer: BoltzFeaturizer
+
+
+def _resolve_path(raw: str) -> Path:
+    """Expand environment variables and user home in a path-like string."""
+
+    expanded = os.path.expanduser(os.path.expandvars(raw))
+    return Path(expanded)
 
 
 def load_input(record: Record, target_dir: Path, msa_dir: Path) -> Input:
@@ -569,14 +577,39 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
         for data_config in cfg.datasets:
             # Set target_dir
-            target_dir = Path(data_config.target_dir)
-            msa_dir = Path(data_config.msa_dir)
+            target_dir = _resolve_path(data_config.target_dir)
+            msa_dir = _resolve_path(data_config.msa_dir)
+
+            if not target_dir.exists():
+                raise FileNotFoundError(
+                    "Processed target directory not found at"
+                    f" '{target_dir}'. Set the SABDAB paths via environment"
+                    " variables (e.g. export SABDAB_PROCESSED_TARGETS=/path/to/targets)"
+                    " or update the training config to point at your dataset."
+                )
+
+            if not msa_dir.exists():
+                raise FileNotFoundError(
+                    "Processed MSA directory not found at"
+                    f" '{msa_dir}'. Set the SABDAB paths via environment"
+                    " variables (e.g. export SABDAB_PROCESSED_MSAS=/path/to/msas)"
+                    " or update the training config to point at your dataset."
+                )
 
             # Load manifest
             if data_config.manifest_path is not None:
-                path = Path(data_config.manifest_path)
+                path = _resolve_path(data_config.manifest_path)
             else:
                 path = target_dir / "manifest.json"
+
+            if not path.exists():
+                raise FileNotFoundError(
+                    "Could not locate processed targets manifest at"
+                    f" '{path}'. Set the SABDAB paths via environment variables"
+                    " (e.g. export SABDAB_PROCESSED_TARGETS=/path/to/targets and"
+                    " SABDAB_PROCESSED_MSAS=/path/to/msas) or update the training"
+                    " config to point at your dataset."
+                )
             manifest: Manifest = Manifest.load(path)
 
             # Split records if given
