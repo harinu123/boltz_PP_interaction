@@ -224,7 +224,10 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
 
         print(f"Loading model from {file_path}")
         model_module = type(model_module).load_from_checkpoint(
-            file_path, map_location="cpu", strict=False, **(model_module.hparams)
+            file_path,
+            map_location="cpu",
+            strict=cfg.strict_loading,
+            **(model_module.hparams),
         )
 
         if cfg.load_confidence_from_trunk:

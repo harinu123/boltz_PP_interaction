@@ -1311,18 +1311,39 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         steering_args.physical_guidance_update = use_potentials
 
         model_cls = Boltz2 if model == "boltz2" else Boltz1
-        model_module = model_cls.load_from_checkpoint(
-            checkpoint,
-            strict=True,
-            predict_args=predict_args,
-            map_location="cpu",
-            diffusion_process_args=asdict(diffusion_params),
-            ema=False,
-            use_kernels=not no_kernels,
-            pairformer_args=asdict(pairformer_args),
-            msa_args=asdict(msa_args),
-            steering_args=asdict(steering_args),
-        )
+        try:
+            model_module = model_cls.load_from_checkpoint(
+                checkpoint,
+                strict=True,
+                predict_args=predict_args,
+                map_location="cpu",
+                diffusion_process_args=asdict(diffusion_params),
+                ema=False,
+                use_kernels=not no_kernels,
+                pairformer_args=asdict(pairformer_args),
+                msa_args=asdict(msa_args),
+                steering_args=asdict(steering_args),
+            )
+        except RuntimeError as err:
+            if "Missing key" not in str(err) and "Unexpected key" not in str(err):
+                raise
+            warnings.warn(
+                "Falling back to non-strict checkpoint loading; this checkpoint is missing "
+                "some parameters expected by the current Boltz release.",
+                RuntimeWarning,
+            )
+            model_module = model_cls.load_from_checkpoint(
+                checkpoint,
+                strict=False,
+                predict_args=predict_args,
+                map_location="cpu",
+                diffusion_process_args=asdict(diffusion_params),
+                ema=False,
+                use_kernels=not no_kernels,
+                pairformer_args=asdict(pairformer_args),
+                msa_args=asdict(msa_args),
+                steering_args=asdict(steering_args),
+            )
         model_module.eval()
 
         # Compute structure predictions
