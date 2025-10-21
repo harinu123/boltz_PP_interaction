@@ -39,6 +39,7 @@ class PairformerLayer(nn.Module):
         self.post_layer_norm = post_layer_norm
 
         self.pre_norm_s = nn.LayerNorm(token_s)
+        self._use_v2 = v2
         if v2:
             self.attention = AttentionPairBiasV2(token_s, token_z, num_heads)
         else:
@@ -104,9 +105,21 @@ class PairformerLayer(nn.Module):
         # Compute sequence stack
         with torch.autocast("cuda", enabled=False):
             s_normed = self.pre_norm_s(s.float())
-            s = s.float() + self.attention(
-                s=s_normed, z=z.float(), mask=mask.float(), k_in=s_normed
-            )
+            if self._use_v2:
+                attn_out = self.attention(
+                    s=s_normed,
+                    z=z.float(),
+                    mask=mask.float(),
+                    k_in=s_normed,
+                )
+            else:
+                attn_out = self.attention(
+                    s=s_normed,
+                    z=z.float(),
+                    mask=mask.float(),
+                )
+
+            s = s.float() + attn_out
             s = s + self.transition_s(s)
             s = self.s_post_norm(s)
 
