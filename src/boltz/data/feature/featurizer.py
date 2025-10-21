@@ -818,7 +818,14 @@ def process_atom_features(
     t_dists = torch.cdist(t_center, t_center)
     boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
     distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-    disto_target = one_hot(distogram, num_classes=num_bins)
+    # The training pipeline expects an explicit conformer axis when computing
+    # distogram losses.  Boltz2 aggregates over this dimension (K) when
+    # `aggregate_distogram` is enabled, but the ground-truth tensors still need
+    # to expose it so batching produces a shape of ``(B, L, L, K, bins)``.
+    #
+    # Single-structure entries therefore provide a singleton K dimension that
+    # keeps the downstream loss code consistent with multi-conformer datasets.
+    disto_target = one_hot(distogram, num_classes=num_bins).unsqueeze(2)
 
     atom_data = np.concatenate(atom_data)
     coord_data = np.concatenate(coord_data, axis=1)
