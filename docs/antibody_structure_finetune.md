@@ -148,3 +148,34 @@ profile that is blended with the traditional MSA statistics.
 With these steps you can continue training Boltz on SAbDab antibody–antigen
 complexes while injecting language-model priors that emphasise paratope and
 epitope preferences directly in the structural featurisation stage.
+
+## 4. Generating hackathon submissions with the fine-tuned checkpoint
+
+Once training finishes, the newest checkpoint under
+`~/sabdab_finetune/output/checkpoints` can be plugged into the hackathon
+workflow directly through the helper script in this repository:
+
+```bash
+cd ~/boltz_PP_interaction
+python hackathon/predict_hackathon.py \
+  --input-jsonl hackathon_data/datasets/abag_public/abag_public.jsonl \
+  --msa-dir hackathon_data/datasets/abag_public/msa \
+  --submission-dir ~/sabdab_finetune/hackathon_submissions \
+  --intermediate-dir ~/sabdab_finetune/hackathon_intermediate
+```
+
+Key details:
+
+- **Checkpoint discovery.** The script automatically searches
+  `~/sabdab_finetune/output/checkpoints`, `~/sabdab_finetune/output`, and
+  `~/weights` for the most recent `.ckpt`. You can override the selection with
+  `--checkpoint` or by exporting `BOLTZ_FINETUNED_CKPT`.
+- **Cache location.** By default the script writes processed molecules and CCD
+  downloads under `~/boltz_cache`. Pass `--cache` or set `BOLTZ_CACHE` to reuse
+  an existing cache.
+- **Compatibility.** The harness mirrors the official hackathon template, so you
+  can still invoke evaluation helpers such as `evaluate_abag.py` with
+  `--result-folder` after predictions complete.
+
+This keeps inference in sync with the fine-tuning environment while remaining a
+drop-in replacement for the standard hackathon utilities.
