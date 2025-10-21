@@ -498,11 +498,18 @@ class Boltz2(LightningModule):
                 "z": z,
             }
 
-            if (
-                self.run_trunk_and_structure
-                and ((not self.training) or self.confidence_prediction)
-                and (not self.skip_run_structure)
-            ):
+            needs_diffusion_conditioning = (
+                (
+                    self.run_trunk_and_structure
+                    and ((not self.training) or self.confidence_prediction)
+                    and (not self.skip_run_structure)
+                )
+                or (self.training and self.structure_prediction_training)
+            )
+
+            diffusion_conditioning = None
+
+            if needs_diffusion_conditioning:
                 if self.checkpoint_diffusion_conditioning and self.training:
                     # TODO decide whether this should be with bf16 or not
                     q, c, to_keys, atom_enc_bias, atom_dec_bias, token_trans_bias = (
@@ -532,6 +539,14 @@ class Boltz2(LightningModule):
                     "token_trans_bias": token_trans_bias,
                 }
 
+            if (
+                self.run_trunk_and_structure
+                and ((not self.training) or self.confidence_prediction)
+                and (not self.skip_run_structure)
+            ):
+                assert (
+                    diffusion_conditioning is not None
+                ), "Diffusion conditioning must be computed when running the structure module."
                 with torch.autocast("cuda", enabled=False):
                     struct_out = self.structure_module.sample(
                         s_trunk=s.float(),
@@ -558,6 +573,9 @@ class Boltz2(LightningModule):
 
             # Compute structure module
             if self.training and self.structure_prediction_training:
+                assert (
+                    diffusion_conditioning is not None
+                ), "Diffusion conditioning must be computed when training the structure module."
                 atom_coords = feats["coords"]
                 B, K, L = atom_coords.shape[0:3]
                 assert K in (
