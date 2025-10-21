@@ -59,12 +59,12 @@ class DataConfig:
     num_workers: int
     random_seed: int
     pin_memory: bool
-    symmetries: Optional[str] = None
     atoms_per_window_queries: int
     min_dist: float
     max_dist: float
     num_bins: int
     overfit: Optional[int] = None
+    symmetries: Optional[str] = None
     pad_to_max_tokens: bool = False
     pad_to_max_atoms: bool = False
     pad_to_max_seqs: bool = False
