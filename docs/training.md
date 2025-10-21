@@ -60,7 +60,7 @@ data:
       target_dir: PATH_TO_TARGETS_DIR       # Path to the directory containing the processed structure files
       msa_dir: PATH_TO_MSA_DIR              # Path to the directory containing the processed MSA files
 
-  symmetries: PATH_TO_SYMMETRY_FILE      # Path to the file containing molecule the symmetry information
+  symmetries: null                       # Optional path to a pickled symmetry dictionary (leave null for none)
   max_tokens: 512                        # Maximum number of tokens in the input sequence
   max_atoms: 4608                        # Maximum number of atoms in the input structure
 ```

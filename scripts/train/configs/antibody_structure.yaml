@@ -37,7 +37,7 @@ data:
   featurizer:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
-  symmetries: PATH_TO_SYMMETRY_FILE
+  symmetries: null
   max_tokens: 384
   max_atoms: 3456
   max_seqs: 1024

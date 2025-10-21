@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -60,7 +59,7 @@ class DataConfig:
     num_workers: int
     random_seed: int
     pin_memory: bool
-    symmetries: str
+    symmetries: Optional[str] = None
     atoms_per_window_queries: int
     min_dist: float
     max_dist: float
@@ -561,7 +560,7 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
         assert self.cfg.val_batch_size == 1, "Validation only works with batch size=1."
 
-        # Load symmetries
+        # Load symmetries when available
         symmetries = get_symmetries(cfg.symmetries)
 
         # Load datasets
