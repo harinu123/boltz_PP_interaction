@@ -232,16 +232,26 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
 
     # Create checkpoint callback
     callbacks = []
-    dirpath = cfg.output
+    dirpath = Path(cfg.output)
+    dirpath.mkdir(parents=True, exist_ok=True)
     if not cfg.disable_checkpoint:
-        mc = ModelCheckpoint(
+        metric_checkpoint = ModelCheckpoint(
             monitor="val/lddt",
             save_top_k=cfg.save_top_k,
             save_last=True,
             mode="max",
             every_n_epochs=1,
         )
-        callbacks = [mc]
+        epoch_checkpoint = ModelCheckpoint(
+            monitor=None,
+            dirpath=str(dirpath / "epochs"),
+            filename="epoch{epoch:03d}",
+            save_top_k=-1,
+            every_n_epochs=1,
+            save_last=False,
+            save_on_train_epoch_end=True,
+        )
+        callbacks = [metric_checkpoint, epoch_checkpoint]
 
     # Create wandb logger
     loggers = []
