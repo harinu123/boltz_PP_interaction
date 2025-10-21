@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ from boltz.data.pad import pad_to_max
 from boltz.data.sample.sampler import Sample, Sampler
 from boltz.data.tokenize.tokenizer import Tokenizer
 from boltz.data.types import MSA, Connection, Input, Manifest, Record, Structure
+from boltz.embeddings.esm_profile import ESMProfileGenerator
 
 
 @dataclass
@@ -30,6 +32,16 @@ class DatasetConfig:
     filters: Optional[list] = None
     split: Optional[str] = None
     manifest_path: Optional[str] = None
+
+
+@dataclass
+class ESMProfileConfig:
+    """Configuration for optional ESM-backed residue profiles."""
+
+    model_name: str = "facebook/esm2_t33_650M_UR50D"
+    cache_dir: Optional[str] = None
+    device: Optional[str] = None
+    mix: float = 0.5
 
 
 @dataclass
@@ -48,12 +60,12 @@ class DataConfig:
     num_workers: int
     random_seed: int
     pin_memory: bool
-    symmetries: str
     atoms_per_window_queries: int
     min_dist: float
     max_dist: float
     num_bins: int
     overfit: Optional[int] = None
+    symmetries: Optional[str] = None
     pad_to_max_tokens: bool = False
     pad_to_max_atoms: bool = False
     pad_to_max_seqs: bool = False
@@ -66,6 +78,7 @@ class DataConfig:
     binder_pocket_sampling_geometric_p: float = 0.0
     val_batch_size: int = 1
     compute_constraint_features: bool = False
+    esm_profile: Optional[ESMProfileConfig] = None
 
 
 @dataclass
@@ -80,6 +93,13 @@ class Dataset:
     cropper: Cropper
     tokenizer: Tokenizer
     featurizer: BoltzFeaturizer
+
+
+def _resolve_path(raw: str) -> Path:
+    """Expand environment variables and user home in a path-like string."""
+
+    expanded = os.path.expanduser(os.path.expandvars(raw))
+    return Path(expanded)
 
 
 def load_input(record: Record, target_dir: Path, msa_dir: Path) -> Input:
@@ -278,6 +298,17 @@ class TrainingDataset(torch.utils.data.Dataset):
             print(f"Tokenizer failed on {sample.record.id} with error {e}. Skipping.")
             return self.__getitem__(idx)
 
+        embedder = getattr(dataset, "esm_profile_generator", None)
+        profile_map = None
+        if embedder is not None:
+            try:
+                profile_map = embedder.build_profile_map(tokenized)
+            except Exception as e:
+                print(
+                    f"ESM profile generation failed on {sample.record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(idx)
+
         # Compute crop
         try:
             if self.max_tokens is not None:
@@ -297,6 +328,16 @@ class TrainingDataset(torch.utils.data.Dataset):
         if len(tokenized.tokens) == 0:
             msg = "No tokens in cropped structure."
             raise ValueError(msg)
+
+        if profile_map is not None:
+            try:
+                profile_array = embedder.profile_for_tokens(tokenized, profile_map)
+                tokenized = replace(tokenized, esm_profile=profile_array)
+            except Exception as e:
+                print(
+                    f"Failed to align ESM profile for {sample.record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(idx)
 
         # Compute features
         try:
@@ -424,6 +465,17 @@ class ValidationDataset(torch.utils.data.Dataset):
             print(f"Tokenizer failed on {record.id} with error {e}. Skipping.")
             return self.__getitem__(0)
 
+        embedder = getattr(dataset, "esm_profile_generator", None)
+        profile_map = None
+        if embedder is not None:
+            try:
+                profile_map = embedder.build_profile_map(tokenized)
+            except Exception as e:
+                print(
+                    f"ESM profile generation failed on {record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(0)
+
         # Compute crop
         try:
             if self.crop_validation and (self.max_tokens is not None):
@@ -441,6 +493,16 @@ class ValidationDataset(torch.utils.data.Dataset):
         if len(tokenized.tokens) == 0:
             msg = "No tokens in cropped structure."
             raise ValueError(msg)
+
+        if profile_map is not None:
+            try:
+                profile_array = embedder.profile_for_tokens(tokenized, profile_map)
+                tokenized = replace(tokenized, esm_profile=profile_array)
+            except Exception as e:
+                print(
+                    f"Failed to align ESM profile for {record.id} with error {e}. Skipping."
+                )
+                return self.__getitem__(0)
 
         # Compute features
         try:
@@ -506,7 +568,7 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
         assert self.cfg.val_batch_size == 1, "Validation only works with batch size=1."
 
-        # Load symmetries
+        # Load symmetries when available
         symmetries = get_symmetries(cfg.symmetries)
 
         # Load datasets
@@ -515,14 +577,39 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
 
         for data_config in cfg.datasets:
             # Set target_dir
-            target_dir = Path(data_config.target_dir)
-            msa_dir = Path(data_config.msa_dir)
+            target_dir = _resolve_path(data_config.target_dir)
+            msa_dir = _resolve_path(data_config.msa_dir)
+
+            if not target_dir.exists():
+                raise FileNotFoundError(
+                    "Processed target directory not found at"
+                    f" '{target_dir}'. Set the SABDAB paths via environment"
+                    " variables (e.g. export SABDAB_PROCESSED_TARGETS=/path/to/targets)"
+                    " or update the training config to point at your dataset."
+                )
+
+            if not msa_dir.exists():
+                raise FileNotFoundError(
+                    "Processed MSA directory not found at"
+                    f" '{msa_dir}'. Set the SABDAB paths via environment"
+                    " variables (e.g. export SABDAB_PROCESSED_MSAS=/path/to/msas)"
+                    " or update the training config to point at your dataset."
+                )
 
             # Load manifest
             if data_config.manifest_path is not None:
-                path = Path(data_config.manifest_path)
+                path = _resolve_path(data_config.manifest_path)
             else:
                 path = target_dir / "manifest.json"
+
+            if not path.exists():
+                raise FileNotFoundError(
+                    "Could not locate processed targets manifest at"
+                    f" '{path}'. Set the SABDAB paths via environment variables"
+                    " (e.g. export SABDAB_PROCESSED_TARGETS=/path/to/targets and"
+                    " SABDAB_PROCESSED_MSAS=/path/to/msas) or update the training"
+                    " config to point at your dataset."
+                )
             manifest: Manifest = Manifest.load(path)
 
             # Split records if given
@@ -595,6 +682,37 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
             dataset: Dataset
             print(f"Validation dataset size: {len(dataset.manifest.records)}")
 
+        self._esm_generator: Optional[ESMProfileGenerator] = None
+        if cfg.esm_profile is not None:
+            mix = cfg.esm_profile.mix
+            cache_dir = (
+                Path(cfg.esm_profile.cache_dir).expanduser()
+                if cfg.esm_profile.cache_dir is not None
+                else Path.cwd() / "esm_cache"
+            )
+            device_cfg = cfg.esm_profile.device
+            if device_cfg is None or device_cfg == "auto":
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            else:
+                device = device_cfg
+
+            if device == "cuda" and cfg.num_workers > 0:
+                print(
+                    "ESM profile generation falling back to CPU because CUDA "
+                    "cannot be safely used with dataloader workers. Set "
+                    "`data.esm_profile.device=\"cuda\"` and `data.num_workers=0` "
+                    "to override."
+                )
+                device = "cpu"
+            self._esm_generator = ESMProfileGenerator(
+                model_name=cfg.esm_profile.model_name,
+                cache_dir=cache_dir,
+                device=device,
+            )
+            cfg.featurizer.esm_profile_mix = mix
+            for dataset in (*train, *val):
+                dataset.esm_profile_generator = self._esm_generator
+
         # Create wrapper datasets
         self._train_set = TrainingDataset(
             datasets=train,
@@ -617,8 +735,9 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
             return_symmetries=cfg.return_train_symmetries,
             compute_constraint_features=cfg.compute_constraint_features,
         )
+        val_datasets = train if cfg.overfit is not None else val
         self._val_set = ValidationDataset(
-            datasets=train if cfg.overfit is not None else val,
+            datasets=val_datasets,
             seed=cfg.random_seed,
             max_atoms=cfg.max_atoms,
             max_tokens=cfg.max_tokens,
@@ -638,6 +757,16 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
             binder_pocket_cutoff=cfg.binder_pocket_cutoff,
             compute_constraint_features=cfg.compute_constraint_features,
         )
+
+        # Map each validation dataset index to a label used by Boltz validators.
+        self.val_group_mapper: dict[int, dict[str, str]] = {}
+        for idx, dataset in enumerate(val_datasets):
+            base_label = dataset.target_dir.name or "dataset"
+            label = f"{base_label}_{idx}" if base_label else f"dataset_{idx}"
+            self.val_group_mapper[idx] = {
+                "label": label,
+                "target_dir": str(dataset.target_dir),
+            }
 
     def setup(self, stage: Optional[str] = None) -> None:
         """Run the setup for the DataModule.

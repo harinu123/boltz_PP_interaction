@@ -111,6 +111,9 @@ class Boltz2(LightningModule):
         # No random recycling
         self.no_random_recycling_training = no_random_recycling_training
 
+        # Toggle validation specific logic in training / evaluation loops
+        self.validate_structure = validate_structure
+
         if validate_structure:
             # Late init at setup time
             self.val_group_mapper = {}  # maps a dataset index to a validation group name
