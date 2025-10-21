@@ -695,6 +695,15 @@ class BoltzTrainingDataModule(pl.LightningDataModule):
                 device = "cuda" if torch.cuda.is_available() else "cpu"
             else:
                 device = device_cfg
+
+            if device == "cuda" and cfg.num_workers > 0:
+                print(
+                    "ESM profile generation falling back to CPU because CUDA "
+                    "cannot be safely used with dataloader workers. Set "
+                    "`data.esm_profile.device=\"cuda\"` and `data.num_workers=0` "
+                    "to override."
+                )
+                device = "cpu"
             self._esm_generator = ESMProfileGenerator(
                 model_name=cfg.esm_profile.model_name,
                 cache_dir=cache_dir,
