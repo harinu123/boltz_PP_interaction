@@ -546,6 +546,13 @@ def process_token_features(
     pocket_feature = (
         np.zeros(len(token_data)) + const.pocket_contact_info["UNSPECIFIED"]
     )
+
+    # Contact conditioning features (default to UNSPECIFIED)
+    contact_conditioning = (
+        np.zeros((len(token_data), len(token_data)))
+        + const.contact_conditioning_info["UNSELECTED"]
+    )
+    contact_threshold = np.zeros((len(token_data), len(token_data)), dtype=np.float32)
     if inference_binder is not None:
         assert inference_pocket is not None
         pocket_residues = set(inference_pocket)
@@ -625,6 +632,19 @@ def process_token_features(
                     )
 
                 pocket_feature[pocket_mask] = const.pocket_contact_info["POCKET"]
+    if np.all(contact_conditioning == const.contact_conditioning_info["UNSELECTED"]):
+        contact_conditioning = (
+            contact_conditioning
+            - const.contact_conditioning_info["UNSELECTED"]
+            + const.contact_conditioning_info["UNSPECIFIED"]
+        )
+
+    contact_conditioning = from_numpy(contact_conditioning).long()
+    contact_conditioning = one_hot(
+        contact_conditioning, num_classes=len(const.contact_conditioning_info)
+    )
+    contact_threshold = from_numpy(contact_threshold).float()
+
     pocket_feature = from_numpy(pocket_feature).long()
     pocket_feature = one_hot(pocket_feature, num_classes=len(const.pocket_contact_info))
 
@@ -643,6 +663,10 @@ def process_token_features(
             pad_mask = pad_dim(pad_mask, 0, pad_len)
             resolved_mask = pad_dim(resolved_mask, 0, pad_len)
             disto_mask = pad_dim(disto_mask, 0, pad_len)
+            contact_conditioning = pad_dim(contact_conditioning, 0, pad_len)
+            contact_conditioning = pad_dim(contact_conditioning, 1, pad_len)
+            contact_threshold = pad_dim(contact_threshold, 0, pad_len)
+            contact_threshold = pad_dim(contact_threshold, 1, pad_len)
             pocket_feature = pad_dim(pocket_feature, 0, pad_len)
             cyclic_period = pad_dim(cyclic_period, 0, pad_len)
 
@@ -659,6 +683,8 @@ def process_token_features(
         "token_pad_mask": pad_mask,
         "token_resolved_mask": resolved_mask,
         "token_disto_mask": disto_mask,
+        "contact_conditioning": contact_conditioning,
+        "contact_threshold": contact_threshold,
         "pocket_feature": pocket_feature,
         "cyclic_period": cyclic_period,
     }
