@@ -2,6 +2,7 @@ import itertools
 import pickle
 import random
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -32,13 +33,14 @@ def convert_atom_name(name: str) -> tuple[int, int, int, int]:
     return tuple(name)
 
 
-def get_symmetries(path: str) -> dict:
+def get_symmetries(path: Optional[str]) -> dict:
     """Create a dictionary for the ligand symmetries.
 
     Parameters
     ----------
-    path : str
-        The path to the ligand symmetries.
+    path : Optional[str]
+        The path to the ligand symmetries. If ``None`` or empty, an empty
+        symmetry mapping is returned.
 
     Returns
     -------
@@ -46,6 +48,9 @@ def get_symmetries(path: str) -> dict:
         The ligand symmetries.
 
     """
+    if not path:
+        return {}
+
     with Path(path).open("rb") as f:
         data: dict = pickle.load(f)  # noqa: S301
 
