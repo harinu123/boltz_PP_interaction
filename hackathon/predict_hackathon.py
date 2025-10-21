@@ -14,13 +14,19 @@ from typing import Any, Iterable, Iterator, List, Optional, Sequence, Tuple
 import yaml
 
 try:
-    from hackathon_api import Datapoint, Protein, SmallMolecule
+    from hackathon_api import Datapoint, Protein, SmallMolecule, TaskType
 except ModuleNotFoundError as exc:  # pragma: no cover - imported at runtime
     msg = (
         "Could not import hackathon_api. Install the hackathon template or add "
         "it to PYTHONPATH before running this script."
     )
     raise SystemExit(msg) from exc
+
+
+def _task_name(value: str | TaskType) -> str:
+    """Return a canonical string form for task types."""
+
+    return value.value if isinstance(value, TaskType) else str(value)
 
 ###############################################################################
 # configuration helpers
@@ -266,12 +272,13 @@ def _run_boltz_and_collect(datapoint: Datapoint, checkpoint: Optional[Path]) -> 
 
     base_input_dict = _prefill_input_dict(datapoint.datapoint_id, datapoint.proteins, datapoint.ligands, args.msa_dir)
 
-    if datapoint.task_type == "protein_complex":
+    task_type = _task_name(datapoint.task_type)
+    if task_type == "protein_complex":
         configs = prepare_protein_complex(datapoint.datapoint_id, datapoint.proteins, base_input_dict, args.msa_dir)
-    elif datapoint.task_type == "protein_ligand":
+    elif task_type == "protein_ligand":
         configs = prepare_protein_ligand(datapoint.datapoint_id, datapoint.proteins[0], datapoint.ligands, base_input_dict, args.msa_dir)
     else:  # pragma: no cover - defensive template parity
-        raise ValueError(f"Unknown task_type: {datapoint.task_type}")
+        raise ValueError(f"Unknown task_type: {task_type}")
 
     all_input_dicts: list[dict[str, Any]] = []
     all_cli_args: list[list[str]] = []
@@ -320,7 +327,7 @@ def _run_boltz_and_collect(datapoint: Datapoint, checkpoint: Optional[Path]) -> 
         all_cli_args.append(list(cli_args))
         all_pred_subfolders.append(pred_subfolder)
 
-    if datapoint.task_type == "protein_complex":
+    if task_type == "protein_complex":
         ranked_files = post_process_protein_complex(datapoint, all_input_dicts, all_cli_args, all_pred_subfolders)
     else:
         ranked_files = post_process_protein_ligand(datapoint, all_input_dicts, all_cli_args, all_pred_subfolders)
@@ -391,14 +398,14 @@ def main() -> None:
         input_path = Path(args.input_json)
         datapoint = _process_json(input_path, checkpoint)
         input_file = args.input_json
-        task_type = datapoint.task_type
+        task_type = _task_name(datapoint.task_type)
     else:
         input_path = Path(args.input_jsonl)
         _process_jsonl(input_path, checkpoint)
         input_file = args.input_jsonl
         try:
             first = next(_iter_datapoints(input_path))
-            task_type = first.task_type
+            task_type = _task_name(first.task_type)
         except StopIteration:
             task_type = None
 
