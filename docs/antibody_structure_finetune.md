@@ -117,7 +117,8 @@ profile that is blended with the traditional MSA statistics.
    - Targets: `/home/ubuntu/sabdab_finetune/targets`
    - MSAs: `/home/ubuntu/sabdab_finetune/msas`
    - Output: `/home/ubuntu/sabdab_finetune/output`
-   - Checkpoint: `/home/ubuntu/weights/boltz2_conf.ckpt`
+  - Checkpoint: `/home/ubuntu/weights/boltz2_conf.ckpt` (the training script
+    downloads the public weights automatically if this file is missing)
 
    Adjust `scripts/train/configs/antibody_structure.yaml` if your paths differ.
 
