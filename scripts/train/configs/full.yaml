@@ -49,7 +49,7 @@ data:
   featurizer:
     _target_: boltz.data.feature.featurizer.BoltzFeaturizer
 
-  symmetries: PATH_TO_SYMMETRY_FILE
+  symmetries: null
   max_tokens: 512
   max_atoms: 4608
   max_seqs: 2048
@@ -82,7 +82,7 @@ model:
   token_s: 384
   token_z: 128
   num_bins: 64
-  atom_feature_dim: 389
+  atom_feature_dim: 388
   atoms_per_window_queries: 32
   atoms_per_window_keys: 128
   compile_pairformer: false
