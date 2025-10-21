@@ -3,7 +3,7 @@ trainer:
   devices: 1
   precision: 32
   gradient_clip_val: 10.0
-  max_epochs: -1
+  max_epochs: 20
   accumulate_grad_batches: 32
 
 output: /home/ubuntu/sabdab_finetune/output
@@ -44,7 +44,7 @@ data:
   pad_to_max_tokens: true
   pad_to_max_atoms: true
   pad_to_max_seqs: true
-  samples_per_epoch: 12000
+  samples_per_epoch: 4000
   batch_size: 1
   num_workers: 4
   random_seed: 17
