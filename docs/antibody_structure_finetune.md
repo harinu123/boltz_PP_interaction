@@ -64,12 +64,15 @@ profile that is blended with the traditional MSA statistics.
    to the default cluster id of `-1`:
    ```bash
    export BOLTZ_CACHE=~/boltz_cache
+   cd ~/boltz_PP_interaction
    python scripts/process/rcsb.py \
        --datadir ~/sabdab_finetune/raw/mmcif \
        --outdir  ~/sabdab_finetune/targets \
        --cache-dir "$BOLTZ_CACHE" \
        --max_file_size 2000000
    ```
+   (If you prefer not to change directories, replace the script path with
+   `~/boltz_PP_interaction/scripts/process/rcsb.py`.)
    If a Redis instance is unavailable the script now falls back to the
    specified cache directory, pulling CCD components on demand and storing
    them under `molecules/`. This step writes `structures/*.npz` and
@@ -107,24 +110,21 @@ profile that is blended with the traditional MSA statistics.
 
 ## 2. Launch fine-tuning with ESM guidance
 
-1. Choose a Boltz checkpoint (e.g., the public `boltz2_conf.ckpt`) and point the
-   new configuration to your processed directories. The default config expects
-   the directories to be provided via environment variables, so you can export
-   them without touching the YAML:
-   ```bash
-   export SABDAB_PROCESSED_TARGETS=~/sabdab_finetune/targets
-   export SABDAB_PROCESSED_MSAS=~/sabdab_finetune/msas
-   export BOLTZ_OUTPUT=~/sabdab_finetune/output
-   export BOLTZ_PRETRAINED=~/weights/boltz2_conf.ckpt
-   ```
-   Alternatively, you can replace the placeholders (`SABDAB_PROCESSED_TARGETS`,
-   `SABDAB_PROCESSED_MSAS`, etc.) directly in
-   `scripts/train/configs/antibody_structure.yaml` with absolute paths.
+1. Choose a Boltz checkpoint (e.g., the public `boltz2_conf.ckpt`). The
+   antibody configuration in this repository already points to the directories
+   created above:
 
-2. Run the training script with the antibody-specific configuration:
+   - Targets: `/home/ubuntu/sabdab_finetune/targets`
+   - MSAs: `/home/ubuntu/sabdab_finetune/msas`
+   - Output: `/home/ubuntu/sabdab_finetune/output`
+   - Checkpoint: `/home/ubuntu/weights/boltz2_conf.ckpt`
+
+   Adjust `scripts/train/configs/antibody_structure.yaml` if your paths differ.
+
+2. Run the training script with the antibody-specific configuration from the
+   project root:
    ```bash
-   BOLTZ_OUTPUT=~/sabdab_finetune/output \
-   BOLTZ_PRETRAINED=~/weights/boltz2_conf.ckpt \
+   cd ~/boltz_PP_interaction
    python scripts/train/train.py scripts/train/configs/antibody_structure.yaml
    ```
 
