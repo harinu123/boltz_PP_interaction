@@ -43,7 +43,15 @@ class PairformerLayer(nn.Module):
         if v2:
             self.attention = AttentionPairBiasV2(token_s, token_z, num_heads)
         else:
-            self.attention = AttentionPairBias(token_s, token_z, num_heads)
+            # The original Boltz2 checkpoints do not include the optional
+            # LayerNorm parameters that are created when
+            # ``initial_norm=True``. We perform the pre-attention
+            # normalization in this module instead, so disable the extra
+            # normalization to keep the parameter shapes compatible with the
+            # released weights.
+            self.attention = AttentionPairBias(
+                token_s, token_z, num_heads, initial_norm=False
+            )
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(token_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(token_z)
