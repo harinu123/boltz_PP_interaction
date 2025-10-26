@@ -128,6 +128,40 @@ def _ensure_pretrained_checkpoint(path_str: str) -> Path:
     raise RuntimeError(msg) from last_error
 
 
+def _maybe_prune_optional_weights(
+    checkpoint_path: Path, model_module: LightningModule
+) -> Optional[Path]:
+    """Drop weights for optional submodules that are disabled in the current model."""
+
+    optional_tokens: list[str] = []
+    if not getattr(model_module, "use_templates", False):
+        optional_tokens.append("template_module")
+    if not getattr(model_module, "bond_type_feature", False):
+        optional_tokens.append("token_bonds_type")
+
+    if not optional_tokens:
+        return None
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = checkpoint.get("state_dict")
+    if state_dict is None:
+        return None
+
+    removed = False
+    for key in list(state_dict.keys()):
+        if any(token in key for token in optional_tokens):
+            state_dict.pop(key)
+            removed = True
+
+    if not removed:
+        return None
+
+    random_string = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    pruned_path = checkpoint_path.with_name(f"{checkpoint_path.stem}_{random_string}.ckpt")
+    torch.save(checkpoint, pruned_path)
+    return pruned_path
+
+
 def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR0915
     """Run training.
 
@@ -193,6 +227,7 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
     if cfg.pretrained and not cfg.resume:
         pretrained_path = _ensure_pretrained_checkpoint(cfg.pretrained)
 
+        temp_paths: list[Path] = []
         # Load the pretrained weights into the confidence module
         if cfg.load_confidence_from_trunk:
             checkpoint = torch.load(pretrained_path, map_location="cpu")
@@ -214,24 +249,34 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
             random_string = "".join(
                 random.choices(string.ascii_lowercase + string.digits, k=10)
             )
-            file_path = str(Path(pretrained_path).parent / f"{random_string}.ckpt")
+            file_path = Path(pretrained_path).parent / f"{random_string}.ckpt"
             print(
-                f"Saving modified checkpoint to {file_path} created by broadcasting trunk of {pretrained_path} to confidence module."
+                "Saving modified checkpoint to "
+                f"{file_path} created by broadcasting trunk of {pretrained_path} to confidence module."
             )
             torch.save(checkpoint, file_path)
+            temp_paths.append(file_path)
         else:
-            file_path = str(pretrained_path)
+            file_path = Path(pretrained_path)
+
+        if cfg.strict_loading:
+            pruned_path = _maybe_prune_optional_weights(file_path, model_module)
+            if pruned_path is not None:
+                temp_paths.append(pruned_path)
+                file_path = pruned_path
 
         print(f"Loading model from {file_path}")
-        model_module = type(model_module).load_from_checkpoint(
-            file_path,
-            map_location="cpu",
-            strict=cfg.strict_loading,
-            **(model_module.hparams),
-        )
-
-        if cfg.load_confidence_from_trunk:
-            os.remove(file_path)
+        try:
+            model_module = type(model_module).load_from_checkpoint(
+                str(file_path),
+                map_location="cpu",
+                strict=cfg.strict_loading,
+                **(model_module.hparams),
+            )
+        finally:
+            for tmp in temp_paths:
+                if tmp.exists():
+                    tmp.unlink()
 
     # Create checkpoint callback
     callbacks = []
