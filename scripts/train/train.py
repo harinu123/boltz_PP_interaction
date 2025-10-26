@@ -2,6 +2,8 @@ import os
 import random
 import string
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,7 @@ from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
 
 from boltz.data.module.training import BoltzTrainingDataModule, DataConfig
+from boltz.main import BOLTZ2_URL_WITH_FALLBACK
 
 
 @dataclass
@@ -77,6 +80,88 @@ class TrainConfig:
     load_confidence_from_trunk: Optional[bool] = False
 
 
+def _ensure_pretrained_checkpoint(path_str: str) -> Path:
+    """Ensure the requested Boltz2 checkpoint exists locally.
+
+    Parameters
+    ----------
+    path_str : str
+        Desired checkpoint path supplied via the config.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to a local checkpoint file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the path cannot be resolved and does not resemble a Boltz2 weight name.
+    RuntimeError
+        If the checkpoint download fails from all fallback URLs.
+    """
+
+    path = Path(path_str).expanduser()
+    if path.exists():
+        return path
+
+    if "boltz2" not in path.name:
+        msg = (
+            "Pretrained checkpoint '{path}' not found and automatic download is only "
+            "supported for Boltz2 weights."
+        )
+        raise FileNotFoundError(msg.format(path=path))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading Boltz2 checkpoint to {path}")
+
+    last_error: Optional[Exception] = None
+    for url in BOLTZ2_URL_WITH_FALLBACK:
+        try:
+            urllib.request.urlretrieve(url, str(path))  # noqa: S310
+            return path
+        except (urllib.error.URLError, OSError) as exc:
+            last_error = exc
+            continue
+
+    msg = f"Failed to download Boltz2 checkpoint to {path}. Last error: {last_error}"
+    raise RuntimeError(msg) from last_error
+
+
+def _maybe_prune_optional_weights(
+    checkpoint_path: Path, model_module: LightningModule
+) -> Optional[Path]:
+    """Drop weights for optional submodules that are disabled in the current model."""
+
+    optional_tokens: list[str] = []
+    if not getattr(model_module, "use_templates", False):
+        optional_tokens.append("template_module")
+    if not getattr(model_module, "bond_type_feature", False):
+        optional_tokens.append("token_bonds_type")
+
+    if not optional_tokens:
+        return None
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = checkpoint.get("state_dict")
+    if state_dict is None:
+        return None
+
+    removed = False
+    for key in list(state_dict.keys()):
+        if any(token in key for token in optional_tokens):
+            state_dict.pop(key)
+            removed = True
+
+    if not removed:
+        return None
+
+    random_string = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    pruned_path = checkpoint_path.with_name(f"{checkpoint_path.stem}_{random_string}.ckpt")
+    torch.save(checkpoint, pruned_path)
+    return pruned_path
+
+
 def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR0915
     """Run training.
 
@@ -127,10 +212,25 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
     data_module = BoltzTrainingDataModule(data_config)
     model_module = cfg.model
 
+    val_group_count = len(getattr(data_module, "val_group_mapper", {}))
+    if hasattr(model_module, "num_val_datasets"):
+        model_module.num_val_datasets = val_group_count
+        if hasattr(model_module, "hparams"):
+            try:
+                model_module.hparams["num_val_datasets"] = val_group_count
+            except TypeError:
+                try:
+                    setattr(model_module.hparams, "num_val_datasets", val_group_count)
+                except AttributeError:
+                    pass
+
     if cfg.pretrained and not cfg.resume:
+        pretrained_path = _ensure_pretrained_checkpoint(cfg.pretrained)
+
+        temp_paths: list[Path] = []
         # Load the pretrained weights into the confidence module
         if cfg.load_confidence_from_trunk:
-            checkpoint = torch.load(cfg.pretrained, map_location="cpu")
+            checkpoint = torch.load(pretrained_path, map_location="cpu")
 
             # Modify parameter names in the state_dict
             new_state_dict = {}
@@ -149,34 +249,57 @@ def train(raw_config: str, args: list[str]) -> None:  # noqa: C901, PLR0912, PLR
             random_string = "".join(
                 random.choices(string.ascii_lowercase + string.digits, k=10)
             )
-            file_path = os.path.dirname(cfg.pretrained) + "/" + random_string + ".ckpt"
+            file_path = Path(pretrained_path).parent / f"{random_string}.ckpt"
             print(
-                f"Saving modified checkpoint to {file_path} created by broadcasting trunk of {cfg.pretrained} to confidence module."
+                "Saving modified checkpoint to "
+                f"{file_path} created by broadcasting trunk of {pretrained_path} to confidence module."
             )
             torch.save(checkpoint, file_path)
+            temp_paths.append(file_path)
         else:
-            file_path = cfg.pretrained
+            file_path = Path(pretrained_path)
+
+        if cfg.strict_loading:
+            pruned_path = _maybe_prune_optional_weights(file_path, model_module)
+            if pruned_path is not None:
+                temp_paths.append(pruned_path)
+                file_path = pruned_path
 
         print(f"Loading model from {file_path}")
-        model_module = type(model_module).load_from_checkpoint(
-            file_path, map_location="cpu", strict=False, **(model_module.hparams)
-        )
-
-        if cfg.load_confidence_from_trunk:
-            os.remove(file_path)
+        try:
+            model_module = type(model_module).load_from_checkpoint(
+                str(file_path),
+                map_location="cpu",
+                strict=cfg.strict_loading,
+                **(model_module.hparams),
+            )
+        finally:
+            for tmp in temp_paths:
+                if tmp.exists():
+                    tmp.unlink()
 
     # Create checkpoint callback
     callbacks = []
-    dirpath = cfg.output
+    dirpath = Path(cfg.output)
+    dirpath.mkdir(parents=True, exist_ok=True)
     if not cfg.disable_checkpoint:
-        mc = ModelCheckpoint(
+        metric_checkpoint = ModelCheckpoint(
             monitor="val/lddt",
             save_top_k=cfg.save_top_k,
             save_last=True,
             mode="max",
             every_n_epochs=1,
         )
-        callbacks = [mc]
+        epoch_checkpoint = ModelCheckpoint(
+            monitor=None,
+            dirpath=str(dirpath / "epochs"),
+            filename="epoch{epoch:03d}",
+            save_top_k=-1,
+            every_n_epochs=1,
+            save_last=False,
+            save_on_train_epoch_end=True,
+        )
+        callbacks = [metric_checkpoint, epoch_checkpoint]
 
     # Create wandb logger
     loggers = []

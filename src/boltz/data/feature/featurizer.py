@@ -1,6 +1,6 @@
 import math
 import random
-from typing import Optional
+from typing import Optional, Union
 from collections import deque
 import numba
 import numpy as np
@@ -546,6 +546,13 @@ def process_token_features(
     pocket_feature = (
         np.zeros(len(token_data)) + const.pocket_contact_info["UNSPECIFIED"]
     )
+
+    # Contact conditioning features (default to UNSPECIFIED)
+    contact_conditioning = (
+        np.zeros((len(token_data), len(token_data)))
+        + const.contact_conditioning_info["UNSELECTED"]
+    )
+    contact_threshold = np.zeros((len(token_data), len(token_data)), dtype=np.float32)
     if inference_binder is not None:
         assert inference_pocket is not None
         pocket_residues = set(inference_pocket)
@@ -625,6 +632,19 @@ def process_token_features(
                     )
 
                 pocket_feature[pocket_mask] = const.pocket_contact_info["POCKET"]
+    if np.all(contact_conditioning == const.contact_conditioning_info["UNSELECTED"]):
+        contact_conditioning = (
+            contact_conditioning
+            - const.contact_conditioning_info["UNSELECTED"]
+            + const.contact_conditioning_info["UNSPECIFIED"]
+        )
+
+    contact_conditioning = from_numpy(contact_conditioning).long()
+    contact_conditioning = one_hot(
+        contact_conditioning, num_classes=len(const.contact_conditioning_info)
+    )
+    contact_threshold = from_numpy(contact_threshold).float()
+
     pocket_feature = from_numpy(pocket_feature).long()
     pocket_feature = one_hot(pocket_feature, num_classes=len(const.pocket_contact_info))
 
@@ -643,6 +663,10 @@ def process_token_features(
             pad_mask = pad_dim(pad_mask, 0, pad_len)
             resolved_mask = pad_dim(resolved_mask, 0, pad_len)
             disto_mask = pad_dim(disto_mask, 0, pad_len)
+            contact_conditioning = pad_dim(contact_conditioning, 0, pad_len)
+            contact_conditioning = pad_dim(contact_conditioning, 1, pad_len)
+            contact_threshold = pad_dim(contact_threshold, 0, pad_len)
+            contact_threshold = pad_dim(contact_threshold, 1, pad_len)
             pocket_feature = pad_dim(pocket_feature, 0, pad_len)
             cyclic_period = pad_dim(cyclic_period, 0, pad_len)
 
@@ -659,6 +683,8 @@ def process_token_features(
         "token_pad_mask": pad_mask,
         "token_resolved_mask": resolved_mask,
         "token_disto_mask": disto_mask,
+        "contact_conditioning": contact_conditioning,
+        "contact_threshold": contact_threshold,
         "pocket_feature": pocket_feature,
         "cyclic_period": cyclic_period,
     }
@@ -792,7 +818,14 @@ def process_atom_features(
     t_dists = torch.cdist(t_center, t_center)
     boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)
     distogram = (t_dists.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-    disto_target = one_hot(distogram, num_classes=num_bins)
+    # The training pipeline expects an explicit conformer axis when computing
+    # distogram losses.  Boltz2 aggregates over this dimension (K) when
+    # `aggregate_distogram` is enabled, but the ground-truth tensors still need
+    # to expose it so batching produces a shape of ``(B, L, L, K, bins)``.
+    #
+    # Single-structure entries therefore provide a singleton K dimension that
+    # keeps the downstream loss code consistent with multi-conformer datasets.
+    disto_target = one_hot(distogram, num_classes=num_bins).unsqueeze(2)
 
     atom_data = np.concatenate(atom_data)
     coord_data = np.concatenate(coord_data, axis=1)
@@ -897,6 +930,8 @@ def process_msa_features(
     max_seqs: int,
     max_tokens: Optional[int] = None,
     pad_to_max_seqs: bool = False,
+    esm_profile: Optional[Union[np.ndarray, torch.Tensor]] = None,
+    profile_mix: Optional[float] = None,
 ) -> dict[str, Tensor]:
     """Get the MSA features.
 
@@ -929,6 +964,16 @@ def process_msa_features(
     msa = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)
     msa_mask = torch.ones_like(msa[:, :, 0])
     profile = msa.float().mean(dim=0)
+    if esm_profile is not None:
+        esm_tensor = torch.as_tensor(esm_profile, dtype=profile.dtype)
+        if esm_tensor.shape != profile.shape:
+            msg = (
+                "ESM profile shape does not match MSA profile: "
+                f"expected {tuple(profile.shape)}, got {tuple(esm_tensor.shape)}"
+            )
+            raise ValueError(msg)
+        mix = 0.5 if profile_mix is None else float(profile_mix)
+        profile = mix * profile + (1 - mix) * esm_tensor
     has_deletion = deletion > 0
     deletion = np.pi / 2 * np.arctan(deletion / 3)
     deletion_mean = deletion.mean(axis=0)
@@ -1122,6 +1167,9 @@ def process_chain_feature_constraints(
 class BoltzFeaturizer:
     """Boltz featurizer."""
 
+    def __init__(self, esm_profile_mix: Optional[float] = None) -> None:
+        self.esm_profile_mix = esm_profile_mix
+
     def process(
         self,
         data: Tokenized,
@@ -1201,6 +1249,8 @@ class BoltzFeaturizer:
             max_seqs,
             max_tokens,
             pad_to_max_seqs,
+            esm_profile=getattr(data, "esm_profile", None),
+            profile_mix=self.esm_profile_mix,
         )
 
         # Compute symmetry features
